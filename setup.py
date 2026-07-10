@@ -3,7 +3,7 @@ py2app setup script for Webmix Sync Starter GUI
 """
 from setuptools import setup
 
-APP = ['gui/wp-sync-native.py']
+APP = ['gui/wp-sync-native-tabbed.py']
 DATA_FILES = [
     ('config', ['config/excludes.txt']),
     ('bin', ['bin/pull', 'bin/push', 'bin/watch', 'bin/setup-site']),
