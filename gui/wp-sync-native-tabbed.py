@@ -1494,9 +1494,28 @@ class SiteTab(QWidget):
         
         self.log_output(f"→ Opening {local_path}...\n", "info")
         
+        # Get editor preference
+        editor_path = self.settings_manager.get('preferred_editor_path', 'auto')
+        
         try:
-            subprocess.Popen(['open', str(local_path)])
-            self.log_output(f"✓ Opened in Finder\n", "success")
+            if editor_path == 'auto':
+                # Try to detect VS Code
+                try:
+                    result = subprocess.run(['which', 'code'], capture_output=True, text=True, timeout=2)
+                    if result.returncode == 0 and result.stdout.strip():
+                        subprocess.Popen(['code', str(local_path)])
+                        self.log_output(f"✓ Opened in VS Code\n", "success")
+                        return
+                except:
+                    pass
+                
+                # Fall back to Finder
+                subprocess.Popen(['open', str(local_path)])
+                self.log_output(f"✓ Opened in Finder\n", "success")
+            else:
+                # Use custom editor path
+                subprocess.Popen([editor_path, str(local_path)])
+                self.log_output(f"✓ Opened in {Path(editor_path).name}\n", "success")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open folder:\n{e}")
             self.log_output(f"✗ Failed to open folder: {e}\n", "error")
