@@ -2633,7 +2633,7 @@ class WPSyncGUI(QMainWindow):
                 border-bottom: 2px solid transparent;
                 padding: 10px 10px 10px 10px;
                 margin-right: 4px;
-                min-height: 36px;
+                min-height: 24px;
                 font-weight: 500;
                 font-size: 11px;
             }
