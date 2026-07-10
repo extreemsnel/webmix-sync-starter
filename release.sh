@@ -61,15 +61,15 @@ if [[ "$CONFIRM" != "y" ]]; then
     exit 0
 fi
 
-# Update version in setup.py and gui/wp-sync-native.py
+# Update version in setup.py and gui/wp-sync-native-tabbed.py
 echo ""
-echo "📝 Updating version in setup.py and wp-sync-native.py..."
+echo "📝 Updating version in setup.py and wp-sync-native-tabbed.py..."
 sed -i.bak "s/'CFBundleVersion': '.*'/'CFBundleVersion': '$NEW_VERSION'/g" setup.py
 sed -i.bak "s/'CFBundleShortVersionString': '.*'/'CFBundleShortVersionString': '$NEW_VERSION'/g" setup.py
 rm setup.py.bak
 
-sed -i.bak 's/APP_VERSION = ".*"/APP_VERSION = "'$NEW_VERSION'"/g' gui/wp-sync-native.py
-rm gui/wp-sync-native.py.bak
+sed -i.bak 's/APP_VERSION = ".*"/APP_VERSION = "'$NEW_VERSION'"/g' gui/wp-sync-native-tabbed.py
+rm gui/wp-sync-native-tabbed.py.bak
 
 echo -e "${GREEN}✓ Version updated to ${NEW_VERSION} in both files${NC}"
 
@@ -153,7 +153,7 @@ if [[ $REPLY =~ ^[Yy]$  ]] || [[ -z $REPLY ]]; then
     
     # Commit version changes
     echo "📝 Committing version changes..."
-    git add setup.py gui/wp-sync-native.py
+    git add setup.py gui/wp-sync-native-tabbed.py
     git commit -m "Release v${NEW_VERSION}" || true
     
     # Create git tag

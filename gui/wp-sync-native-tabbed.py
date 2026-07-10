@@ -5,7 +5,7 @@ A native desktop application using PyQt5 with support for multiple simultaneous 
 """
 
 # Version - should match setup.py
-APP_VERSION = "2.0.0"
+APP_VERSION = "1.2.2"
 GITHUB_REPO_OWNER = "webmixnl"
 GITHUB_REPO_NAME = "webmix-sync-starter"
 
