@@ -2412,6 +2412,14 @@ class WPSyncGUI(QMainWindow):
         
         # Restore session
         self.restore_session()
+        
+        # Check for updates automatically on startup (delayed to not interfere with UI)
+        QTimer.singleShot(3000, self.auto_check_for_updates)
+    
+    def auto_check_for_updates(self):
+        """Automatically check for updates on startup (silent if no update available)"""
+        if UPDATE_CHECKER_AVAILABLE:
+            self.check_for_updates(silent=True)
     
     def init_ui(self):
         """Initialize the user interface"""
@@ -3058,9 +3066,113 @@ class WPSyncGUI(QMainWindow):
         dialog = SettingsDialog(self.settings_manager, self)
         dialog.exec_()
     
-    def check_for_updates(self):
-        """Check for updates (placeholder)"""
-        QMessageBox.information(self, "Updates", "Update checker not implemented yet.")
+    def check_for_updates(self, silent=False):
+        """Check for updates from GitHub"""
+        if not UPDATE_CHECKER_AVAILABLE:
+            if not silent:
+                QMessageBox.warning(self, "Updates", "Update checker module not available.")
+            return
+        
+        # Show progress dialog only if not silent
+        progress = None
+        if not silent:
+            progress = QProgressDialog("Checking for updates...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.show()
+            QApplication.processEvents()
+        
+        try:
+            checker = UpdateChecker(APP_VERSION)
+            has_update, latest_version, download_url, message = checker.check_for_updates()
+            
+            if progress:
+                progress.close()
+            
+            if has_update:
+                # Show update available dialog
+                reply = QMessageBox.question(
+                    self, "Update Available",
+                    f"<b>New version available: {latest_version}</b><br>"
+                    f"Current version: {APP_VERSION}<br><br>"
+                    f"<b>Release Notes:</b><br>"
+                    f"{message[:500]}{'...' if len(message) > 500 else ''}<br><br>"
+                    f"Would you like to download and install the update?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.download_and_install_update(download_url, latest_version)
+            else:
+                # No update or error
+                if not silent:
+                    if latest_version:
+                        QMessageBox.information(
+                            self, "No Updates",
+                            f"You are running the latest version ({APP_VERSION})."
+                        )
+                    else:
+                        QMessageBox.warning(
+                            self, "Update Check Failed",
+                            f"Could not check for updates:\n{message}"
+                        )
+                    
+        except Exception as e:
+            if progress:
+                progress.close()
+            if not silent:
+                QMessageBox.critical(self, "Error", f"Update check failed:\n{e}")
+    
+    def download_and_install_update(self, download_url, version):
+        """Download and install update"""
+        # Create progress dialog
+        progress = QProgressDialog("Downloading update...", "Cancel", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        
+        def update_progress(downloaded, total):
+            if total > 0:
+                percent = int((downloaded / total) * 100)
+                progress.setValue(percent)
+                progress.setLabelText(f"Downloading update... {downloaded // 1024} KB / {total // 1024} KB")
+            QApplication.processEvents()
+            
+            if progress.wasCanceled():
+                raise Exception("Download cancelled by user")
+        
+        try:
+            checker = UpdateChecker(APP_VERSION)
+            success, dmg_path, error = checker.download_update(download_url, update_progress)
+            
+            progress.close()
+            
+            if success:
+                # Ask to install
+                reply = QMessageBox.question(
+                    self, "Download Complete",
+                    f"Update {version} has been downloaded.\n\n"
+                    "Open the installer now?\n\n"
+                    "The app will quit to allow installation.",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    install_success, install_msg = checker.install_update(dmg_path)
+                    
+                    if install_success:
+                        QMessageBox.information(self, "Update Ready", install_msg)
+                        # Quit the app
+                        QApplication.quit()
+                    else:
+                        QMessageBox.critical(self, "Installation Failed", install_msg)
+            else:
+                QMessageBox.critical(self, "Download Failed", error)
+                
+        except Exception as e:
+            progress.close()
+            if "cancelled" not in str(e).lower():
+                QMessageBox.critical(self, "Error", f"Download failed:\n{e}")
     
     def show_about(self):
         """Show about dialog"""
