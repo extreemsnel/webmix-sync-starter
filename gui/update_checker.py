@@ -15,7 +15,7 @@ import os
 class UpdateChecker:
     """Check for and install app updates from GitHub Releases"""
     
-    def __init__(self, current_version, repo_owner="webmixnl", repo_name="webmix-sync-starter"):
+    def __init__(self, current_version, repo_owner="extreemsnel", repo_name="webmix-sync-starter"):
         """
         Initialize the update checker
         

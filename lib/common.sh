@@ -8,6 +8,8 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_DIR="$PROJECT_ROOT/config"
+COPILOT_INSTRUCTIONS_REL_PATH=".github/copilot-instructions.md"
+COPILOT_INSTRUCTIONS_TEMPLATE="$PROJECT_ROOT/$COPILOT_INSTRUCTIONS_REL_PATH"
 
 # Check if sites exist in Application Support (for bundled app)
 APP_SUPPORT_DIR="$HOME/Library/Application Support/Webmix Sync Starter"
@@ -194,10 +196,31 @@ run_rsync_push_item() {
   return $rsync_exit
 }
 
+ensure_copilot_instructions_for_pull() {
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    log "Dry run enabled, skipping Copilot instructions file update"
+    return
+  fi
+
+  if [[ ! -f "$COPILOT_INSTRUCTIONS_TEMPLATE" ]]; then
+    log "Copilot instructions template not found, skipping: $COPILOT_INSTRUCTIONS_TEMPLATE"
+    return
+  fi
+
+  local dest_dir="$LOCAL_ROOT/.github"
+  local dest_file="$dest_dir/copilot-instructions.md"
+
+  mkdir -p "$dest_dir"
+  cp "$COPILOT_INSTRUCTIONS_TEMPLATE" "$dest_file"
+  log "Ensured Copilot instructions file: $dest_file"
+}
+
 run_all_pull() {
   while IFS= read -r rel; do
     run_rsync_pull_item "$rel"
   done < <(normalize_sync_items)
+
+  ensure_copilot_instructions_for_pull
 }
 
 run_all_push() {

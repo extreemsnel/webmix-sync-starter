@@ -186,12 +186,16 @@ DEBOUNCE_SECONDS="1"
 ```
 
 Fetches the allowed folders from server to local.
+After pull, the script also ensures `LOCAL_ROOT/.github/copilot-instructions.md`
+from this repository template.
 
 Dry run:
 
 ```bash
 ./bin/pull client-a --dry-run
 ```
+
+In dry-run mode, the Copilot instructions file is not written.
 
 ### Push
 

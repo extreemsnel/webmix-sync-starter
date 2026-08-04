@@ -6,7 +6,7 @@ A native desktop application using PyQt5 with support for multiple simultaneous 
 
 # Version - should match setup.py
 APP_VERSION = "1.2.3"
-GITHUB_REPO_OWNER = "webmixnl"
+GITHUB_REPO_OWNER = "extreemsnel"
 GITHUB_REPO_NAME = "webmix-sync-starter"
 
 MAX_CONCURRENT_WATCHES = 5  # Hard limit on simultaneous watch modes

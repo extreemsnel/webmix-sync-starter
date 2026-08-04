@@ -8,6 +8,7 @@ DATA_FILES = [
     ('config', ['config/excludes.txt']),
     ('bin', ['bin/pull', 'bin/push', 'bin/watch', 'bin/setup-site']),
     ('lib', ['lib/common.sh']),
+    ('.github', ['.github/copilot-instructions.md']),
 ]
 
 OPTIONS = {
