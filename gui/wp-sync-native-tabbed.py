@@ -1021,11 +1021,514 @@ class SiteTab(QWidget):
         self.sync_timeout_timer = None
         self.permissions_thread = None
         self.force_cleanup_timer = None
+        self.wp_config_dialog = None
+        self.debug_log_dialog = None
         
         # Load site config
         self.config = self.load_config()
         
         self.init_ui()
+
+    def _set_remote_file_buttons_enabled(self, enabled):
+        """Enable or disable remote file action buttons."""
+        if hasattr(self, 'edit_wp_config_btn'):
+            self.edit_wp_config_btn.setEnabled(enabled)
+        if hasattr(self, 'view_debug_log_btn'):
+            self.view_debug_log_btn.setEnabled(enabled)
+        if hasattr(self, 'clear_debug_log_btn'):
+            self.clear_debug_log_btn.setEnabled(enabled)
+
+    def _shell_quote(self, value):
+        """Safely quote a shell argument with single quotes."""
+        return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+    def _remote_join(self, base, rel):
+        base_clean = (base or "").rstrip('/')
+        rel_clean = rel.lstrip('/')
+        if base_clean in ("", "/"):
+            return f"/{rel_clean}"
+        return f"{base_clean}/{rel_clean}"
+
+    def _get_remote_paths(self):
+        remote_root = self.config.get('REMOTE_ROOT', '').strip()
+        if not remote_root:
+            QMessageBox.warning(
+                self,
+                "Missing Configuration",
+                "REMOTE_ROOT is required in the site configuration."
+            )
+            return None
+
+        remote_root_clean = remote_root.rstrip('/') or '/'
+        root_name = Path(remote_root_clean).name
+
+        # Support both styles:
+        # 1) REMOTE_ROOT points to WordPress root (contains wp-content)
+        # 2) REMOTE_ROOT points directly to wp-content
+        if root_name == 'wp-content':
+            wp_content_dir = remote_root_clean
+            wp_root_dir = str(Path(remote_root_clean).parent).replace('\\', '/') or '/'
+        else:
+            wp_root_dir = remote_root_clean
+            wp_content_dir = self._remote_join(remote_root_clean, 'wp-content')
+
+        wp_config_path = self._remote_join(wp_root_dir, 'wp-config.php')
+        debug_log_path = self._remote_join(wp_content_dir, 'debug.log')
+        return wp_config_path, debug_log_path
+
+    def _build_ssh_command(self, remote_command):
+        ssh_host = self.config.get('SSH_HOST', '').strip()
+        ssh_port = self.config.get('SSH_PORT', '22').strip() or '22'
+        ssh_user = self.config.get('SSH_USER', '').strip()
+        ssh_key = self.settings_manager.get('ssh_key_path', '~/.ssh/id_rsa')
+
+        if not ssh_host or not ssh_user:
+            QMessageBox.warning(
+                self,
+                "Invalid Configuration",
+                "SSH host and user are required in the site configuration."
+            )
+            return None
+
+        ssh_cmd = ['ssh', '-p', ssh_port]
+        if ssh_key:
+            ssh_cmd.extend(['-i', str(Path(ssh_key).expanduser())])
+        ssh_cmd.extend([
+            '-o', 'ConnectTimeout=10',
+            '-o', 'BatchMode=yes',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            f"{ssh_user}@{ssh_host}",
+            remote_command
+        ])
+        return ssh_cmd
+
+    def _run_ssh(self, remote_command, timeout=45):
+        ssh_cmd = self._build_ssh_command(remote_command)
+        if not ssh_cmd:
+            return None
+
+        try:
+            return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "SSH Timeout", "Remote operation timed out.")
+            return None
+        except Exception as e:
+            QMessageBox.critical(self, "SSH Error", f"Remote operation failed:\n{e}")
+            return None
+
+    def _fetch_wp_config_content(self):
+        paths = self._get_remote_paths()
+        if not paths:
+            return False, "", "Missing REMOTE_ROOT configuration."
+
+        wp_config_path, _ = paths
+        quoted_path = self._shell_quote(wp_config_path)
+        remote_cmd = (
+            f"if [ ! -f {quoted_path} ]; then "
+            f"echo '__MISSING__'; exit 44; "
+            f"fi; cat {quoted_path}"
+        )
+
+        result = self._run_ssh(remote_cmd, timeout=45)
+        if result is None:
+            return False, "", "SSH command failed."
+
+        if result.returncode == 0:
+            return True, result.stdout, "Loaded wp-config.php"
+
+        if result.returncode == 44:
+            return False, "", f"wp-config.php not found at {wp_config_path}"
+
+        error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+        return False, "", f"Failed to load wp-config.php: {error_msg}"
+
+    def _save_wp_config_content(self, content):
+        paths = self._get_remote_paths()
+        if not paths:
+            return False, "Missing REMOTE_ROOT configuration."
+
+        wp_config_path, _ = paths
+        payload = base64.b64encode(content.encode('utf-8')).decode('ascii')
+        quoted_path = self._shell_quote(wp_config_path)
+        quoted_payload = self._shell_quote(payload)
+
+        remote_cmd = f"""
+set -e
+wp_config={quoted_path}
+payload={quoted_payload}
+
+if [ ! -f "$wp_config" ]; then
+  echo "__MISSING__"
+  exit 44
+fi
+
+backup="$wp_config.bak-$(date +%Y%m%d-%H%M%S)"
+orig_mode="$(stat -c '%a' "$wp_config" 2>/dev/null || stat -f '%Lp' "$wp_config" 2>/dev/null || true)"
+chmod_changed=0
+
+if [ ! -w "$wp_config" ]; then
+  chmod u+w "$wp_config"
+  chmod_changed=1
+fi
+
+cp "$wp_config" "$backup"
+tmp_file="$wp_config.tmp.$$"
+
+if ! (printf '%s' "$payload" | base64 -d > "$tmp_file" 2>/dev/null); then
+  printf '%s' "$payload" | base64 -D > "$tmp_file"
+fi
+
+mv "$tmp_file" "$wp_config"
+
+if command -v php >/dev/null 2>&1; then
+  if ! lint_output="$(php -l "$wp_config" 2>&1)"; then
+    cp "$backup" "$wp_config"
+    if [ "$chmod_changed" -eq 1 ] && [ -n "$orig_mode" ]; then
+      chmod "$orig_mode" "$wp_config"
+    fi
+    echo "__LINT_FAIL__"
+    echo "$lint_output"
+    echo "__BACKUP__:$backup"
+    exit 42
+  fi
+  echo "__LINT_OK__"
+  echo "$lint_output"
+else
+  echo "__PHP_MISSING__"
+fi
+
+if [ "$chmod_changed" -eq 1 ] && [ -n "$orig_mode" ]; then
+  chmod "$orig_mode" "$wp_config"
+fi
+
+echo "__BACKUP__:$backup"
+"""
+
+        result = self._run_ssh(remote_cmd, timeout=45)
+        if result is None:
+            return False, "SSH command failed while saving wp-config.php."
+
+        stdout = result.stdout or ""
+        stderr = result.stderr.strip()
+
+        if result.returncode == 0:
+            if "__PHP_MISSING__" in stdout:
+                return True, "Saved wp-config.php. PHP lint skipped (php not found)."
+            return True, "Saved wp-config.php and PHP lint passed."
+
+        if result.returncode == 44:
+            return False, f"wp-config.php not found at {wp_config_path}"
+
+        if result.returncode == 42 and "__LINT_FAIL__" in stdout:
+            lint_lines = []
+            capture = False
+            backup_path = ""
+            for line in stdout.splitlines():
+                if line.strip() == "__LINT_FAIL__":
+                    capture = True
+                    continue
+                if line.startswith("__BACKUP__:"):
+                    backup_path = line.split(":", 1)[1].strip()
+                    capture = False
+                    continue
+                if capture:
+                    lint_lines.append(line)
+
+            lint_msg = "\n".join(lint_lines).strip() or "PHP syntax error"
+            if backup_path:
+                return False, (
+                    "Save failed PHP lint. Rolled back from backup.\n\n"
+                    f"Backup: {backup_path}\n"
+                    f"Lint output:\n{lint_msg}"
+                )
+            return False, f"Save failed PHP lint. Rolled back.\n\nLint output:\n{lint_msg}"
+
+        generic_error = stderr or stdout.strip() or "Unknown error"
+        return False, f"Failed to save wp-config.php: {generic_error}"
+
+    def _fetch_debug_log_content(self):
+        paths = self._get_remote_paths()
+        if not paths:
+            return "error", "", "Missing REMOTE_ROOT configuration."
+
+        _, debug_log_path = paths
+        quoted_path = self._shell_quote(debug_log_path)
+        remote_cmd = (
+            f"if [ ! -f {quoted_path} ]; then "
+            f"echo '__MISSING__'; exit 44; "
+            f"fi; tail -n 2000 {quoted_path}"
+        )
+
+        result = self._run_ssh(remote_cmd, timeout=45)
+        if result is None:
+            return "error", "", "SSH command failed."
+
+        if result.returncode == 0:
+            return "ok", result.stdout, "Loaded latest 2000 lines from debug.log."
+
+        if result.returncode == 44:
+            return "missing", "", f"debug.log not found at {debug_log_path}"
+
+        error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+        return "error", "", f"Failed to read debug.log: {error_msg}"
+
+    def _ensure_debug_log_exists(self):
+        paths = self._get_remote_paths()
+        if not paths:
+            return False, "Missing REMOTE_ROOT configuration."
+
+        _, debug_log_path = paths
+        quoted_path = self._shell_quote(debug_log_path)
+        quoted_dir = self._shell_quote(str(Path(debug_log_path).parent).replace('\\', '/'))
+
+        remote_cmd = (
+            f"mkdir -p {quoted_dir} && "
+            f"if [ ! -f {quoted_path} ]; then touch {quoted_path}; fi"
+        )
+
+        result = self._run_ssh(remote_cmd, timeout=45)
+        if result is None:
+            return False, "SSH command failed."
+
+        if result.returncode == 0:
+            return True, "debug.log created."
+
+        error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+        return False, f"Failed to create debug.log: {error_msg}"
+
+    def _clear_debug_log_content(self):
+        paths = self._get_remote_paths()
+        if not paths:
+            return False, "Missing REMOTE_ROOT configuration."
+
+        _, debug_log_path = paths
+        quoted_path = self._shell_quote(debug_log_path)
+        quoted_dir = self._shell_quote(str(Path(debug_log_path).parent).replace('\\', '/'))
+
+        remote_cmd = f"""
+set -e
+log_file={quoted_path}
+log_dir={quoted_dir}
+
+mkdir -p "$log_dir"
+
+if [ ! -f "$log_file" ]; then
+  touch "$log_file"
+fi
+
+orig_mode="$(stat -c '%a' "$log_file" 2>/dev/null || stat -f '%Lp' "$log_file" 2>/dev/null || true)"
+chmod_changed=0
+if [ ! -w "$log_file" ]; then
+  chmod u+w "$log_file"
+  chmod_changed=1
+fi
+
+: > "$log_file"
+
+if [ "$chmod_changed" -eq 1 ] && [ -n "$orig_mode" ]; then
+  chmod "$orig_mode" "$log_file"
+fi
+"""
+
+        result = self._run_ssh(remote_cmd, timeout=45)
+        if result is None:
+            return False, "SSH command failed."
+
+        if result.returncode == 0:
+            return True, "debug.log cleared."
+
+        error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+        return False, f"Failed to clear debug.log: {error_msg}"
+
+    def open_wp_config_editor(self):
+        """Open wp-config editor dialog."""
+        if self.is_watching() or (self.current_thread and self.current_thread.isRunning()) or (
+            self.permissions_thread and self.permissions_thread.isRunning()
+        ):
+            QMessageBox.warning(self, "Busy", "Another operation is currently running.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit wp-config.php - {self.site_key}")
+        dialog.setMinimumSize(900, 700)
+
+        layout = QVBoxLayout(dialog)
+        info_label = QLabel("Remote file editor for wp-config.php")
+        layout.addWidget(info_label)
+
+        editor = QPlainTextEdit()
+        editor.setFont(QFont("Monaco", 10))
+        layout.addWidget(editor)
+
+        status_label = QLabel("")
+        layout.addWidget(status_label)
+
+        button_row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        save_btn = QPushButton("Save")
+        close_btn = QPushButton("Close")
+        save_btn.setEnabled(False)
+
+        button_row.addWidget(refresh_btn)
+        button_row.addStretch()
+        button_row.addWidget(save_btn)
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
+
+        state = {'original': "", 'loading': False}
+
+        def set_status(text, ok=None):
+            if ok is True:
+                status_label.setStyleSheet("color: #16a34a;")
+            elif ok is False:
+                status_label.setStyleSheet("color: #dc2626;")
+            else:
+                status_label.setStyleSheet("color: #374151;")
+            status_label.setText(text)
+
+        def refresh_content():
+            state['loading'] = True
+            save_btn.setEnabled(False)
+            ok, content, message = self._fetch_wp_config_content()
+            if ok:
+                editor.setPlainText(content)
+                state['original'] = content
+                set_status(message, True)
+            else:
+                set_status(message, False)
+            state['loading'] = False
+
+        def on_text_changed():
+            if state['loading']:
+                return
+            changed = editor.toPlainText() != state['original']
+            save_btn.setEnabled(changed)
+
+        def save_content():
+            if editor.toPlainText() == state['original']:
+                save_btn.setEnabled(False)
+                return
+            set_status("Saving...", None)
+            success, message = self._save_wp_config_content(editor.toPlainText())
+            if success:
+                state['original'] = editor.toPlainText()
+                save_btn.setEnabled(False)
+                set_status(message, True)
+                self.log_output(f"✓ wp-config.php saved for {self.site_key}\n", "success")
+            else:
+                set_status(message, False)
+                self.log_output(f"✗ wp-config.php save failed for {self.site_key}\n", "error")
+
+        refresh_btn.clicked.connect(refresh_content)
+        save_btn.clicked.connect(save_content)
+        close_btn.clicked.connect(dialog.reject)
+        editor.textChanged.connect(on_text_changed)
+
+        refresh_content()
+        dialog.exec_()
+
+    def view_debug_log(self):
+        """Open debug.log viewer dialog with one-shot refresh."""
+        if self.is_watching() or (self.current_thread and self.current_thread.isRunning()) or (
+            self.permissions_thread and self.permissions_thread.isRunning()
+        ):
+            QMessageBox.warning(self, "Busy", "Another operation is currently running.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"debug.log - {self.site_key}")
+        dialog.setMinimumSize(900, 650)
+
+        layout = QVBoxLayout(dialog)
+        info_label = QLabel("Showing latest 2000 lines (one-shot refresh).")
+        layout.addWidget(info_label)
+
+        log_text = QPlainTextEdit()
+        log_text.setReadOnly(True)
+        log_text.setFont(QFont("Monaco", 10))
+        layout.addWidget(log_text)
+
+        status_label = QLabel("")
+        layout.addWidget(status_label)
+
+        button_row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        create_btn = QPushButton("Create debug.log")
+        create_btn.setVisible(False)
+        close_btn = QPushButton("Close")
+
+        button_row.addWidget(refresh_btn)
+        button_row.addWidget(create_btn)
+        button_row.addStretch()
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
+
+        def set_status(text, ok=None):
+            if ok is True:
+                status_label.setStyleSheet("color: #16a34a;")
+            elif ok is False:
+                status_label.setStyleSheet("color: #dc2626;")
+            else:
+                status_label.setStyleSheet("color: #374151;")
+            status_label.setText(text)
+
+        def refresh_log():
+            status, content, message = self._fetch_debug_log_content()
+            if status == "ok":
+                log_text.setPlainText(content)
+                create_btn.setVisible(False)
+                set_status(message, True)
+                self.log_output(f"✓ Loaded debug.log for {self.site_key}\n", "info")
+            elif status == "missing":
+                log_text.setPlainText(message)
+                create_btn.setVisible(True)
+                set_status("debug.log not found.", False)
+            else:
+                log_text.setPlainText(message)
+                create_btn.setVisible(False)
+                set_status(message, False)
+
+        def create_log():
+            ok, message = self._ensure_debug_log_exists()
+            if ok:
+                set_status(message, True)
+                refresh_log()
+            else:
+                set_status(message, False)
+
+        refresh_btn.clicked.connect(refresh_log)
+        create_btn.clicked.connect(create_log)
+        close_btn.clicked.connect(dialog.reject)
+
+        refresh_log()
+        dialog.exec_()
+
+    def clear_debug_log(self):
+        """Clear debug.log contents on remote server."""
+        if self.is_watching() or (self.current_thread and self.current_thread.isRunning()) or (
+            self.permissions_thread and self.permissions_thread.isRunning()
+        ):
+            QMessageBox.warning(self, "Busy", "Another operation is currently running.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Clear debug.log",
+            f"Erase debug.log content for {self.site_key}?\n\n"
+            "This keeps the file and only clears its content.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        ok, message = self._clear_debug_log_content()
+        if ok:
+            self.log_output(f"✓ {message}\n", "success")
+            QMessageBox.information(self, "Success", message)
+        else:
+            self.log_output(f"✗ {message}\n", "error")
+            QMessageBox.warning(self, "Failed", message)
     
     def load_config(self):
         """Load site configuration from .env file"""
@@ -1133,6 +1636,30 @@ class SiteTab(QWidget):
         permissions_row.addWidget(self.clean_local_btn)
         
         actions_layout.addLayout(permissions_row)
+
+        # Remote file tools row
+        remote_files_row = QHBoxLayout()
+        remote_files_row.setSpacing(8)
+
+        self.edit_wp_config_btn = QPushButton("Edit wp-config")
+        self.edit_wp_config_btn.setMinimumHeight(32)
+        self.edit_wp_config_btn.setToolTip("Edit remote wp-config.php (auto-detected from REMOTE_ROOT)")
+        self.edit_wp_config_btn.clicked.connect(self.open_wp_config_editor)
+        remote_files_row.addWidget(self.edit_wp_config_btn)
+
+        self.view_debug_log_btn = QPushButton("View debug.log")
+        self.view_debug_log_btn.setMinimumHeight(32)
+        self.view_debug_log_btn.setToolTip("View latest 2000 lines of remote debug.log (auto-detected from REMOTE_ROOT)")
+        self.view_debug_log_btn.clicked.connect(self.view_debug_log)
+        remote_files_row.addWidget(self.view_debug_log_btn)
+
+        self.clear_debug_log_btn = QPushButton("Clear debug.log")
+        self.clear_debug_log_btn.setMinimumHeight(32)
+        self.clear_debug_log_btn.setToolTip("Erase content of remote debug.log (auto-detected from REMOTE_ROOT)")
+        self.clear_debug_log_btn.clicked.connect(self.clear_debug_log)
+        remote_files_row.addWidget(self.clear_debug_log_btn)
+
+        actions_layout.addLayout(remote_files_row)
         actions_group.setLayout(actions_layout)
         layout.addWidget(actions_group)
         
@@ -1276,6 +1803,7 @@ class SiteTab(QWidget):
         self.pull_btn.setEnabled(False)
         self.push_btn.setEnabled(False)
         self.test_connection_btn.setEnabled(False)
+        self._set_remote_file_buttons_enabled(False)
         
         self.watch_started.emit(self.site_key)
     
@@ -1362,6 +1890,7 @@ class SiteTab(QWidget):
         self.pull_btn.setEnabled(True)
         self.push_btn.setEnabled(True)
         self.test_connection_btn.setEnabled(True)
+        self._set_remote_file_buttons_enabled(True)
         
         self.sync_status_changed.emit(self.site_key, False, "")
     
@@ -1373,6 +1902,7 @@ class SiteTab(QWidget):
         
         self.pull_btn.setEnabled(False)
         self.push_btn.setEnabled(False)
+        self._set_remote_file_buttons_enabled(False)
         
         self.current_thread = CommandThread(args, self.project_root)
         self.current_thread.output_signal.connect(self.append_output)
@@ -1392,6 +1922,7 @@ class SiteTab(QWidget):
         
         self.pull_btn.setEnabled(True)
         self.push_btn.setEnabled(True)
+        self._set_remote_file_buttons_enabled(True)
         
         if self.current_thread:
             self.current_thread.blockSignals(True)
@@ -1620,6 +2151,7 @@ class SiteTab(QWidget):
         
         self.open_rights_btn.setEnabled(False)
         self.open_rights_btn.setText("Opening...")
+        self._set_remote_file_buttons_enabled(False)
         
         self.permissions_thread = PermissionsThread(ssh_command, "open")
         self.permissions_thread.output_signal.connect(self.log_output)
@@ -1630,6 +2162,7 @@ class SiteTab(QWidget):
         """Handle completion of open rights operation"""
         self.open_rights_btn.setEnabled(True)
         self.open_rights_btn.setText("🔓 Open Rights")
+        self._set_remote_file_buttons_enabled(True)
         self.permissions_thread = None
     
     def close_rights(self):
@@ -1682,6 +2215,7 @@ class SiteTab(QWidget):
         
         self.close_rights_btn.setEnabled(False)
         self.close_rights_btn.setText("Closing...")
+        self._set_remote_file_buttons_enabled(False)
         
         self.permissions_thread = PermissionsThread(ssh_command, "close")
         self.permissions_thread.output_signal.connect(self.log_output)
@@ -1692,6 +2226,7 @@ class SiteTab(QWidget):
         """Handle completion of close rights operation"""
         self.close_rights_btn.setEnabled(True)
         self.close_rights_btn.setText("🔒 Close Rights")
+        self._set_remote_file_buttons_enabled(True)
         self.permissions_thread = None
     
     def clean_local_files(self):
