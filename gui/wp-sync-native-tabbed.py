@@ -836,7 +836,15 @@ class NewSiteDialog(QDialog):
         layout.addLayout(form)
         
         # Sync items text area
-        layout.addWidget(QLabel("Sync Items (one per line):"))
+        sync_items_header = QHBoxLayout()
+        sync_items_header.addWidget(QLabel("Sync Items (one per line):"))
+        sync_items_header.addStretch()
+        browse_remote_btn = QPushButton("Browse Remote...")
+        browse_remote_btn.setToolTip("Connect to server and select folders/files")
+        browse_remote_btn.clicked.connect(self.browse_remote_folders)
+        sync_items_header.addWidget(browse_remote_btn)
+        layout.addLayout(sync_items_header)
+
         self.sync_items_input = QPlainTextEdit()
         self.sync_items_input.setPlaceholderText("themes/my-theme\nplugins/my-plugin")
         self.sync_items_input.setMaximumHeight(100)
@@ -896,6 +904,49 @@ class NewSiteDialog(QDialog):
         )
         if folder:
             self.local_root_input.setText(folder)
+
+    def browse_remote_folders(self):
+        ssh_host = self.ssh_host_input.text().strip()
+        ssh_user = self.ssh_user_input.text().strip()
+        ssh_port = self.ssh_port_input.text().strip() or '22'
+        remote_root = self.remote_root_input.text().strip()
+
+        if not ssh_host:
+            QMessageBox.warning(self, "Missing Information",
+                "Please enter SSH Host before browsing remote folders.")
+            self.ssh_host_input.setFocus()
+            return
+
+        if not ssh_user:
+            QMessageBox.warning(self, "Missing Information",
+                "Please enter SSH User before browsing remote folders.")
+            self.ssh_user_input.setFocus()
+            return
+
+        if not remote_root:
+            QMessageBox.warning(self, "Missing Information",
+                "Please enter Remote Root path before browsing.")
+            self.remote_root_input.setFocus()
+            return
+
+        dialog = RemoteFolderSelectorDialog(
+            ssh_host, ssh_port, ssh_user, remote_root,
+            self.settings_manager, self
+        )
+
+        if dialog.exec_() == QDialog.Accepted:
+            selected_items = dialog.get_selected_items()
+            if selected_items:
+                current_text = self.sync_items_input.toPlainText().strip()
+
+                existing_items = set()
+                if current_text:
+                    existing_items = set(line.strip() for line in current_text.split('\n') if line.strip())
+
+                for item in selected_items:
+                    existing_items.add(item)
+
+                self.sync_items_input.setPlainText('\n'.join(sorted(existing_items)))
     
     def validate_and_accept(self):
         if not self.site_key_input.text().strip():
