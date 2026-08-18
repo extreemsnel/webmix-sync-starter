@@ -123,7 +123,8 @@ class AuthThread(QThread):
             
             headers = {
                 'Authorization': f'Basic {encoded}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Googlebot/2.1 (+http://www.google.com/bot.html)'
             }
             
             url = f"{self.wp_url.rstrip('/')}/wp-json/wp/v2/users/me"
@@ -161,7 +162,8 @@ class FetchSitesThread(QThread):
             
             headers = {
                 'Authorization': f'Basic {encoded}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Googlebot/2.1 (+http://www.google.com/bot.html)'
             }
             
             url = f"{self.wp_url.rstrip('/')}/wp-json/wp/v2/sites"
@@ -316,7 +318,8 @@ class AuthThread(QThread):
             
             headers = {
                 'Authorization': f'Basic {encoded}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Googlebot/2.1 (+http://www.google.com/bot.html)'
             }
             
             url = f"{self.wp_url.rstrip('/')}/wp-json/wp/v2/users/me"
@@ -354,7 +357,8 @@ class FetchSitesThread(QThread):
             
             headers = {
                 'Authorization': f'Basic {encoded}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Googlebot/2.1 (+http://www.google.com/bot.html)'
             }
             
             url = f"{self.wp_url.rstrip('/')}/wp-json/webmix/v1/cpanels"
