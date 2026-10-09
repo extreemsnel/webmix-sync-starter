@@ -5,7 +5,7 @@ A native desktop application using PyQt5 with support for multiple simultaneous 
 """
 
 # Version - should match setup.py
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 GITHUB_REPO_OWNER = "extreemsnel"
 GITHUB_REPO_NAME = "webmix-sync-starter"
 
@@ -71,6 +71,7 @@ class SettingsManager:
             "preferred_editor_path": "auto",
             "default_debounce_seconds": 3,
             "app_icon": "photo",
+            "quick_actions": ["pull", "watch", "editor"],
             "open_tabs": [],  # List of site keys that were open
             "tab_order": []   # Order of tabs
         }
@@ -1132,25 +1133,55 @@ def text_label(text, object_name):
     return label
 
 
+# Site actions: (key, button attribute, icon, title, subtitle, handler, tooltip).
+# Any 3 can be pinned as top cards (Settings > Appearance); the rest fill the Tools grid in this order.
+SITE_ACTIONS = [
+    ("pull", "pull_btn", 'down', "Pull from remote", "Download server files", "run_pull", ""),
+    ("watch", "watch_btn", 'eye', "Watch changes", "Auto-sync local edits", "toggle_watch", ""),
+    ("editor", "open_in_editor_btn", 'code', "Open in editor", "Open local folder", "open_in_editor", ""),
+    ("test", "test_connection_btn", 'plug', "Test connection", "Check server access", "test_connection", ""),
+    ("ssh", "ssh_btn", 'terminal', "Open SSH", "Start terminal session", "open_ssh_terminal", ""),
+    ("push", "push_btn", 'up', "Push to remote", "Launch local project", "run_push", ""),
+    ("edit", "edit_btn", 'settings', "Edit site", "Connection settings", "edit_site", ""),
+    ("open_rights", "open_rights_btn", 'unlock', "Open rights", "Enable file writes", "open_rights",
+     "Open file permissions on server (chmod 755/644)"),
+    ("close_rights", "close_rights_btn", 'lock', "Close rights", "Secure file writes", "close_rights",
+     "Restrict file permissions on server (secure WordPress)"),
+    ("wp_config", "edit_wp_config_btn", 'file', "Edit wp-config", "Configuration file", "open_wp_config_editor",
+     "Edit remote wp-config.php (auto-detected from REMOTE_ROOT)"),
+    ("debug_log", "view_debug_log_btn", 'eye', "View debug.log", "Inspect recent errors", "view_debug_log",
+     "View latest 2000 lines of remote debug.log (auto-detected from REMOTE_ROOT)"),
+]
+DEFAULT_QUICK_ACTIONS = ["pull", "watch", "editor"]
+
+
+def repolish(widget):
+    """Re-apply stylesheet after objectName/property changes (incl. descendant selectors)"""
+    for w in [widget] + widget.findChildren(QWidget):
+        w.style().unpolish(w)
+        w.style().polish(w)
+
+
 class ActionButton(QPushButton):
     """Clickable row/card: [icon] title / subtitle ... [badge] [chevron].
     setText() updates the title so existing button-text logic keeps working."""
 
-    def __init__(self, icon, title, subtitle="", object_name="toolRow", icon_box=34, badge=None, parent=None):
+    def __init__(self, icon, title, subtitle="", badge=None, parent=None):
         super().__init__(parent)
-        self.setObjectName(object_name)
+        self.icon_name = icon
         self.setCursor(Qt.PointingHandCursor)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 10, 16, 10)
         layout.setSpacing(12)
-        layout.addWidget(icon_label(icon, C_ACCENT if object_name == "actionCard" else C_TEXT, 18, icon_box))
+        self.icon_box = icon_label(icon)
+        layout.addWidget(self.icon_box)
 
         text_col = QVBoxLayout()
         text_col.setSpacing(1)
         self.title_label = text_label(title, "rowTitle")
         text_col.addWidget(self.title_label)
-        if subtitle:
-            text_col.addWidget(text_label(subtitle, "rowSubtitle"))
+        self.subtitle_label = text_label(subtitle, "rowSubtitle")
+        text_col.addWidget(self.subtitle_label)
         layout.addLayout(text_col)
         layout.addStretch()
 
@@ -1160,6 +1191,17 @@ class ActionButton(QPushButton):
             layout.addWidget(self.badge, 0, Qt.AlignVCenter)
         else:
             layout.addWidget(icon_label('chevron', C_MUTED, 16, object_name="chevron"))
+        self.set_variant(card=False)
+
+    def set_variant(self, card, left_column=False):
+        """Large top card or Tools grid row"""
+        self.setObjectName("actionCard" if card else ("toolRowLeft" if left_column else "toolRow"))
+        box = 40 if card else 34
+        self.icon_box.setFixedSize(box, box)
+        self.icon_box.setPixmap(make_icon(self.icon_name, C_ACCENT if card else C_TEXT, 18).pixmap(18, 18))
+        self.subtitle_label.setVisible(not card)
+        self.setFixedHeight(76 if card else 61)
+        repolish(self)
 
     def setText(self, text):
         self.title_label.setText(text)
@@ -1820,19 +1862,16 @@ fi
         body.setSpacing(18)
         layout.addLayout(body)
 
-        # Primary actions
-        primary_row = QHBoxLayout()
-        primary_row.setSpacing(14)
-        self.pull_btn = ActionButton('down', "Pull from remote", object_name="actionCard", icon_box=40)
-        self.pull_btn.clicked.connect(self.run_pull)
-        self.watch_btn = ActionButton('eye', "Watch changes", object_name="actionCard", icon_box=40, badge="OFF")
-        self.watch_btn.clicked.connect(self.toggle_watch)
-        self.open_in_editor_btn = ActionButton('code', "Open in editor", object_name="actionCard", icon_box=40)
-        self.open_in_editor_btn.clicked.connect(self.open_in_editor)
-        for btn in (self.pull_btn, self.watch_btn, self.open_in_editor_btn):
-            btn.setFixedHeight(76)
-            primary_row.addWidget(btn)
-        body.addLayout(primary_row)
+        # Action buttons; arrange_actions() places them in the top row or the Tools grid
+        for key, attr, icon, title, subtitle, handler, tooltip in SITE_ACTIONS:
+            btn = ActionButton(icon, title, subtitle, badge="OFF" if key == "watch" else None)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(getattr(self, handler))
+            setattr(self, attr, btn)
+
+        self.primary_row = QHBoxLayout()
+        self.primary_row.setSpacing(14)
+        body.addLayout(self.primary_row)
 
         cards_row = QHBoxLayout()
         cards_row.setSpacing(18)
@@ -1850,40 +1889,9 @@ fi
         refresh_btn.clicked.connect(self.reload_config)
         tools_layout.addWidget(self._card_header("Tools", "Site and server utilities", refresh_btn))
 
-        grid = QGridLayout()
-        grid.setSpacing(0)
-        self.test_connection_btn = ActionButton('plug', "Test connection", "Check server access")
-        self.test_connection_btn.clicked.connect(self.test_connection)
-        self.ssh_btn = ActionButton('terminal', "Open SSH", "Start terminal session")
-        self.ssh_btn.clicked.connect(self.open_ssh_terminal)
-        self.push_btn = ActionButton('up', "Push to remote", "Launch local project")
-        self.push_btn.clicked.connect(self.run_push)
-        self.edit_btn = ActionButton('settings', "Edit site", "Connection settings")
-        self.edit_btn.clicked.connect(self.edit_site)
-        self.open_rights_btn = ActionButton('unlock', "Open rights", "Enable file writes")
-        self.open_rights_btn.setToolTip("Open file permissions on server (chmod 755/644)")
-        self.open_rights_btn.clicked.connect(self.open_rights)
-        self.close_rights_btn = ActionButton('lock', "Close rights", "Secure file writes")
-        self.close_rights_btn.setToolTip("Restrict file permissions on server (secure WordPress)")
-        self.close_rights_btn.clicked.connect(self.close_rights)
-        self.edit_wp_config_btn = ActionButton('file', "Edit wp-config", "Configuration file")
-        self.edit_wp_config_btn.setToolTip("Edit remote wp-config.php (auto-detected from REMOTE_ROOT)")
-        self.edit_wp_config_btn.clicked.connect(self.open_wp_config_editor)
-        self.view_debug_log_btn = ActionButton('eye', "View debug.log", "Inspect recent errors")
-        self.view_debug_log_btn.setToolTip("View latest 2000 lines of remote debug.log (auto-detected from REMOTE_ROOT)")
-        self.view_debug_log_btn.clicked.connect(self.view_debug_log)
-        tools = [
-            self.test_connection_btn, self.ssh_btn,
-            self.push_btn, self.edit_btn,
-            self.open_rights_btn, self.close_rights_btn,
-            self.edit_wp_config_btn, self.view_debug_log_btn,
-        ]
-        for i, btn in enumerate(tools):
-            if i % 2 == 0:
-                btn.setObjectName("toolRowLeft")
-            btn.setFixedHeight(61)
-            grid.addWidget(btn, i // 2, i % 2)
-        tools_layout.addLayout(grid)
+        self.tools_grid = QGridLayout()
+        self.tools_grid.setSpacing(0)
+        tools_layout.addLayout(self.tools_grid)
 
         danger_row = QHBoxLayout()
         danger_row.setContentsMargins(8, 10, 8, 10)
@@ -1950,6 +1958,24 @@ fi
 
         body.addLayout(cards_row)
         body.addStretch()
+        self.arrange_actions()
+
+    def arrange_actions(self):
+        """Place the user's 3 quick actions as top cards, the rest in the Tools grid"""
+        quick = self.settings_manager.get('quick_actions') or DEFAULT_QUICK_ACTIONS
+        buttons = {key: getattr(self, attr) for key, attr, *_ in SITE_ACTIONS}
+        if len(set(quick) & buttons.keys()) != 3:
+            quick = DEFAULT_QUICK_ACTIONS
+        for btn in buttons.values():
+            self.primary_row.removeWidget(btn)
+            self.tools_grid.removeWidget(btn)
+        for key in quick:
+            buttons[key].set_variant(card=True)
+            self.primary_row.addWidget(buttons[key])
+        rest = [key for key, *_ in SITE_ACTIONS if key not in quick]
+        for i, key in enumerate(rest):
+            buttons[key].set_variant(card=False, left_column=(i % 2 == 0))
+            self.tools_grid.addWidget(buttons[key], i // 2, i % 2)
         self._update_live()
 
     def _card_header(self, title, subtitle, action_widget):
@@ -2072,8 +2098,7 @@ fi
         self.watch_btn.setText("Watching changes")
         self.watch_btn.badge.setText("ON")
         self.watch_btn.setProperty("active", True)
-        self.watch_btn.style().unpolish(self.watch_btn)
-        self.watch_btn.style().polish(self.watch_btn)
+        repolish(self.watch_btn)
         self._update_live()
         
         self.pull_btn.setEnabled(False)
@@ -2159,8 +2184,7 @@ fi
         self.watch_btn.setText("Watch changes")
         self.watch_btn.badge.setText("OFF")
         self.watch_btn.setProperty("active", False)
-        self.watch_btn.style().unpolish(self.watch_btn)
-        self.watch_btn.style().polish(self.watch_btn)
+        repolish(self.watch_btn)
         self.watch_btn.setEnabled(True)
         QTimer.singleShot(0, self._update_live)
         
@@ -2992,6 +3016,19 @@ class SettingsDialog(QDialog):
             "<i>Changes the icon in the Dock and app switcher while the app runs.<br>"
             "The icon in Finder/Applications stays the default.</i>"
         ))
+        
+        appearance_layout.addSpacing(15)
+        appearance_layout.addWidget(QLabel("<b>Quick Actions</b>"))
+        appearance_layout.addWidget(QLabel("Choose the 3 large buttons at the top. All other actions appear under Tools."))
+        quick_form = QFormLayout()
+        self.quick_action_combos = []
+        for slot in range(3):
+            combo = QComboBox()
+            for key, _, icon, title, *_ in SITE_ACTIONS:
+                combo.addItem(make_icon(icon, C_TEXT, 16), title, key)
+            quick_form.addRow(f"Button {slot + 1}:", combo)
+            self.quick_action_combos.append(combo)
+        appearance_layout.addLayout(quick_form)
         appearance_layout.addStretch()
         tabs.addTab(appearance_tab, "Appearance")
         
@@ -3016,6 +3053,9 @@ class SettingsDialog(QDialog):
         self.editor_path_input.setText(self.settings_manager.get('preferred_editor_path', 'auto'))
         self.debounce_seconds_input.setValue(self.settings_manager.get('default_debounce_seconds', 3))
         self.app_icon_combo.setCurrentIndex(max(0, self.app_icon_combo.findData(self.settings_manager.get('app_icon', 'photo'))))
+        quick = self.settings_manager.get('quick_actions') or DEFAULT_QUICK_ACTIONS
+        for combo, key in zip(self.quick_action_combos, quick):
+            combo.setCurrentIndex(max(0, combo.findData(key)))
         
         if self.settings_manager.is_authenticated():
             self.auth_status_label.setText("✓ Previously authenticated")
@@ -3096,6 +3136,11 @@ class SettingsDialog(QDialog):
         self.settings_manager.set('default_sync_items', self.sync_items_input.toPlainText().strip())
         self.settings_manager.set('preferred_editor_path', self.editor_path_input.text().strip() or 'auto')
         self.settings_manager.set('default_debounce_seconds', self.debounce_seconds_input.value())
+        quick = [combo.currentData() for combo in self.quick_action_combos]
+        if len(set(quick)) != len(quick):
+            QMessageBox.warning(self, "Quick Actions", "Choose 3 different quick actions.")
+            return
+        self.settings_manager.set('quick_actions', quick)
         self.settings_manager.set('app_icon', self.app_icon_combo.currentData())
         apply_app_icon(self.app_icon_combo.currentData())
         
@@ -3464,6 +3509,7 @@ class WPSyncGUI(QMainWindow):
             QPushButton#actionCard {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 12px; }}
             QPushButton#actionCard:hover {{ border-color: #c9d6cd; background: #fbfcfb; }}
             QPushButton#actionCard[active="true"] {{ border-color: #8cc9a4; background: #f2faf5; }}
+            QPushButton#toolRow[active="true"], QPushButton#toolRowLeft[active="true"] {{ background: #f2faf5; }}
             QPushButton#actionCard QLabel#iconBox {{ background-color: #e5f1e9; border-radius: 9px; }}
             QPushButton#actionCard QLabel#rowTitle {{ font-size: 13px; font-weight: 500; }}
             QPushButton#toolRow, QPushButton#toolRowLeft {{ background: #ffffff; border: none; border-top: 1px solid {C_BORDER}; border-radius: 0; }}
@@ -3476,7 +3522,7 @@ class WPSyncGUI(QMainWindow):
             QLabel#rowSubtitle {{ font-size: 10px; color: {C_MUTED}; }}
             QLabel#rowTitle:disabled, QLabel#rowSubtitle:disabled {{ color: #b4bcb7; }}
             QLabel#badge {{ background: #f0f3f1; color: {C_MUTED}; border: 1px solid {C_BORDER}; border-radius: 4px; font-size: 9px; font-weight: 600; padding: 2px 6px; }}
-            QPushButton#actionCard[active="true"] QLabel#badge {{ background: #dcf3e4; color: {C_ACCENT}; border-color: #a9dbbd; }}
+            QPushButton[active="true"] QLabel#badge {{ background: #dcf3e4; color: {C_ACCENT}; border-color: #a9dbbd; }}
             
             /* Console */
             QFrame#console {{ background-color: #13241b; border-radius: 10px; }}
@@ -3876,7 +3922,9 @@ class WPSyncGUI(QMainWindow):
     def open_settings(self):
         """Open settings dialog"""
         dialog = SettingsDialog(self.settings_manager, self)
-        dialog.exec_()
+        if dialog.exec_() == QDialog.Accepted:
+            for site_tab in self.tab_manager.site_tabs.values():
+                site_tab.arrange_actions()
     
     def check_for_updates(self, silent=False):
         """Check for updates from GitHub"""
@@ -4042,6 +4090,13 @@ class WPSyncGUI(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Webmix Sync Starter")
+    
+    # The UI is designed light-only; keep dialogs light even when macOS is in dark mode
+    try:
+        from AppKit import NSApplication, NSAppearance
+        NSApplication.sharedApplication().setAppearance_(NSAppearance.appearanceNamed_("NSAppearanceNameAqua"))
+    except ImportError:
+        pass
     
     window = WPSyncGUI()
     window.show()
