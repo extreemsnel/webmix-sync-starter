@@ -70,6 +70,7 @@ class SettingsManager:
             "authenticated": False,
             "preferred_editor_path": "auto",
             "default_debounce_seconds": 3,
+            "app_icon": "photo",
             "open_tabs": [],  # List of site keys that were open
             "tab_order": []   # Order of tabs
         }
@@ -1073,6 +1074,20 @@ ICON_PATHS = {
     'plus': '<path d="M5 12h14"/><path d="M12 5v14"/>',
     'more': '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
 }
+
+# Selectable app (Dock/window) icons: key -> (label, file next to this script / in app Resources)
+APP_ICONS = {
+    "photo": ("Team photo", "app-icon.icns"),
+    "logo": ("Webmix logo", "app-icon-logo.png"),
+}
+LOGO_PATH = Path(__file__).parent / "app-icon-logo.png"
+
+
+def apply_app_icon(key):
+    """Set the running app's Dock and window icon"""
+    _, filename = APP_ICONS.get(key, APP_ICONS["photo"])
+    QApplication.setWindowIcon(QIcon(str(Path(__file__).parent / filename)))
+
 
 # Palette
 C_TEXT = "#16201a"
@@ -2959,7 +2974,26 @@ class SettingsDialog(QDialog):
         ))
         
         ssh_layout.addStretch()
-        tabs.addTab(ssh_tab, "SSH & Sync")
+        tabs.addTab(ssh_tab, "SSH && Sync")
+        
+        # Appearance Tab
+        appearance_tab = QWidget()
+        appearance_layout = QVBoxLayout(appearance_tab)
+        appearance_layout.addWidget(QLabel("<b>Appearance</b>"))
+        appearance_layout.addSpacing(10)
+        appearance_form = QFormLayout()
+        self.app_icon_combo = QComboBox()
+        self.app_icon_combo.setIconSize(QSize(32, 32))
+        for key, (label, filename) in APP_ICONS.items():
+            self.app_icon_combo.addItem(QIcon(str(Path(__file__).parent / filename)), label, key)
+        appearance_form.addRow("App Icon:", self.app_icon_combo)
+        appearance_layout.addLayout(appearance_form)
+        appearance_layout.addWidget(QLabel(
+            "<i>Changes the icon in the Dock and app switcher while the app runs.<br>"
+            "The icon in Finder/Applications stays the default.</i>"
+        ))
+        appearance_layout.addStretch()
+        tabs.addTab(appearance_tab, "Appearance")
         
         layout.addWidget(tabs)
         
@@ -2981,6 +3015,7 @@ class SettingsDialog(QDialog):
         self.sync_items_input.setPlainText(self.settings_manager.get('default_sync_items', 'themes\nplugins'))
         self.editor_path_input.setText(self.settings_manager.get('preferred_editor_path', 'auto'))
         self.debounce_seconds_input.setValue(self.settings_manager.get('default_debounce_seconds', 3))
+        self.app_icon_combo.setCurrentIndex(max(0, self.app_icon_combo.findData(self.settings_manager.get('app_icon', 'photo'))))
         
         if self.settings_manager.is_authenticated():
             self.auth_status_label.setText("✓ Previously authenticated")
@@ -3061,6 +3096,8 @@ class SettingsDialog(QDialog):
         self.settings_manager.set('default_sync_items', self.sync_items_input.toPlainText().strip())
         self.settings_manager.set('preferred_editor_path', self.editor_path_input.text().strip() or 'auto')
         self.settings_manager.set('default_debounce_seconds', self.debounce_seconds_input.value())
+        self.settings_manager.set('app_icon', self.app_icon_combo.currentData())
+        apply_app_icon(self.app_icon_combo.currentData())
         
         if (self.settings_manager.get('wp_url') and 
             self.settings_manager.get('wp_username') and 
@@ -3189,6 +3226,7 @@ class WPSyncGUI(QMainWindow):
         
         # Initialize settings
         self.settings_manager = SettingsManager(self.project_root)
+        apply_app_icon(self.settings_manager.get('app_icon'))
         
         # API sites data and threads
         self.api_sites_data = []
@@ -3282,7 +3320,12 @@ class WPSyncGUI(QMainWindow):
         brand = QHBoxLayout()
         brand.setContentsMargins(8, 0, 0, 0)
         brand.setSpacing(12)
-        brand.addWidget(icon_label('sync', "#d6e6dc", 18, 36, "brandIcon"))
+        logo = QLabel()
+        logo_pixmap = QPixmap(str(LOGO_PATH)).copy(100, 100, 824, 824)  # strip Dock padding
+        logo_pixmap = logo_pixmap.scaled(72, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        logo_pixmap.setDevicePixelRatio(2)
+        logo.setPixmap(logo_pixmap)
+        brand.addWidget(logo)
         brand_text = QVBoxLayout()
         brand_text.setSpacing(0)
         brand_text.addWidget(text_label("Webmix", "brandTitle"))
@@ -3371,7 +3414,6 @@ class WPSyncGUI(QMainWindow):
             
             /* Sidebar */
             QFrame#sidebar {{ background-color: #13261c; }}
-            QLabel#brandIcon {{ background-color: #1d3a2b; border: 1px solid #2c4d3b; border-radius: 9px; }}
             QLabel#brandTitle {{ color: #ffffff; font-size: 16px; font-weight: 600; }}
             QLabel#brandSub {{ color: #8fa699; font-size: 12px; }}
             QLabel#sectionLabel {{ color: #8fa699; font-size: 10px; font-weight: 600; letter-spacing: 1.5px; }}

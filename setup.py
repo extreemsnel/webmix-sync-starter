@@ -8,6 +8,7 @@ DATA_FILES = [
     ('config', ['config/excludes.txt']),
     ('bin', ['bin/pull', 'bin/push', 'bin/watch', 'bin/setup-site']),
     ('lib', ['lib/common.sh']),
+    ('', ['gui/app-icon-logo.png']),
     ('.github', ['.github/copilot-instructions.md']),
 ]
 
