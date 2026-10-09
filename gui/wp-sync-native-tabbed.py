@@ -28,10 +28,13 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QPushButton, QTextEdit, QCheckBox, QMessageBox,
     QGroupBox, QFrame, QDialog, QLineEdit, QFormLayout, QDialogButtonBox,
     QFileDialog, QPlainTextEdit, QMenuBar, QAction, QTabWidget, QSpinBox,
-    QListWidget, QListWidgetItem, QProgressDialog, QSystemTrayIcon, QMenu, QTabBar
+    QListWidget, QListWidgetItem, QProgressDialog, QSystemTrayIcon, QMenu, QTabBar,
+    QGridLayout, QStackedWidget, QToolButton
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess
-from PyQt5.QtGui import QFont, QTextCursor, QIcon, QTextCharFormat, QColor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess, QSize, QByteArray
+from PyQt5.QtGui import QFont, QTextCursor, QIcon, QTextCharFormat, QColor, QPixmap, QPainter
+from PyQt5.QtSvg import QSvgRenderer
+from functools import lru_cache
 
 # macOS native menubar support
 try:
@@ -1050,6 +1053,133 @@ class NewSiteDialog(QDialog):
         self.debounce_input.setValue(int(default_debounce))
 
 
+# Line icons (Lucide, ISC license) rendered via QtSvg
+ICON_PATHS = {
+    'sync': '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+    'globe': '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+    'chevron': '<path d="m9 18 6-6-6-6"/>',
+    'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+    'down': '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+    'up': '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    'eye': '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+    'code': '<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>',
+    'plug': '<path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="m2 22 3-3"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m18 3-4 4h6l-4 4"/>',
+    'terminal': '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+    'unlock': '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+    'lock': '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    'file': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+    'trash': '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+    'x': '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    'plus': '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    'more': '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+}
+
+# Palette
+C_TEXT = "#16201a"
+C_MUTED = "#7b867f"
+C_BORDER = "#e3e8e4"
+C_ACCENT = "#1f6b45"
+C_DANGER = "#c0392b"
+C_CONSOLE_TEXT = "#c7d6cc"
+
+
+@lru_cache(maxsize=None)
+def make_icon(name, color=C_TEXT, size=18):
+    """Render a line icon to a crisp (2x) QIcon"""
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+           f'stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">'
+           f'{ICON_PATHS[name]}</svg>')
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    QSvgRenderer(QByteArray(svg.encode())).render(painter)
+    painter.end()
+    pixmap.setDevicePixelRatio(2)
+    return QIcon(pixmap)
+
+
+def icon_label(name, color=C_TEXT, size=18, box=None, object_name="iconBox"):
+    """QLabel showing an icon, optionally centered in a styled square box"""
+    label = QLabel()
+    label.setObjectName(object_name)
+    label.setPixmap(make_icon(name, color, size).pixmap(size, size))
+    label.setAlignment(Qt.AlignCenter)
+    label.setAttribute(Qt.WA_TransparentForMouseEvents)
+    if box:
+        label.setFixedSize(box, box)
+    return label
+
+
+def text_label(text, object_name):
+    label = QLabel(text)
+    label.setObjectName(object_name)
+    label.setAttribute(Qt.WA_TransparentForMouseEvents)
+    return label
+
+
+class ActionButton(QPushButton):
+    """Clickable row/card: [icon] title / subtitle ... [badge] [chevron].
+    setText() updates the title so existing button-text logic keeps working."""
+
+    def __init__(self, icon, title, subtitle="", object_name="toolRow", icon_box=34, badge=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self.setCursor(Qt.PointingHandCursor)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
+        layout.addWidget(icon_label(icon, C_ACCENT if object_name == "actionCard" else C_TEXT, 18, icon_box))
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(1)
+        self.title_label = text_label(title, "rowTitle")
+        text_col.addWidget(self.title_label)
+        if subtitle:
+            text_col.addWidget(text_label(subtitle, "rowSubtitle"))
+        layout.addLayout(text_col)
+        layout.addStretch()
+
+        self.badge = None
+        if badge is not None:
+            self.badge = text_label(badge, "badge")
+            layout.addWidget(self.badge, 0, Qt.AlignVCenter)
+        else:
+            layout.addWidget(icon_label('chevron', C_MUTED, 16, object_name="chevron"))
+
+    def setText(self, text):
+        self.title_label.setText(text)
+
+    def text(self):
+        return self.title_label.text()
+
+
+class SiteListItem(QWidget):
+    """Sidebar entry for an open site"""
+
+    def __init__(self, site_key, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 12, 6)
+        layout.setSpacing(12)
+        avatar = text_label(site_key[:1].upper(), "siteAvatar")
+        avatar.setFixedSize(30, 30)
+        avatar.setAlignment(Qt.AlignCenter)
+        layout.addWidget(avatar)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(0)
+        text_col.addWidget(text_label(site_key, "siteName"))
+        text_col.addWidget(text_label("WordPress site", "siteSub"))
+        layout.addLayout(text_col)
+        layout.addStretch()
+        self.dot = text_label("●", "liveDot")
+        self.dot.setToolTip("Watching changes")
+        self.dot.setVisible(False)
+        layout.addWidget(self.dot)
+
+    def set_watching(self, watching):
+        self.dot.setVisible(watching)
+
+
 class SiteTab(QWidget):
     """Self-contained widget for managing one site"""
     
@@ -1609,169 +1739,244 @@ fi
         return config
     
     def init_ui(self):
-        """Initialize the tab UI"""
+        """Initialize the site view"""
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
-        
-        # Action buttons
-        actions_group = QGroupBox("Actions")
-        actions_layout = QVBoxLayout()
-        actions_layout.setSpacing(8)
-        
-        # Primary sync row
-        sync_row = QHBoxLayout()
-        sync_row.setSpacing(8)
-        self.pull_btn = QPushButton("⬇ Pull")
-        self.pull_btn.setObjectName("pullBtn")
-        self.pull_btn.setMinimumHeight(38)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Header: active workspace + connection status
+        header = QFrame()
+        header.setObjectName("header")
+        header.setFixedHeight(84)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(38, 0, 38, 0)
+        header_layout.setSpacing(12)
+        header_layout.addWidget(icon_label('globe', C_TEXT, 20, 42, "iconBoxOutline"))
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        title_col.addStretch()
+        title_col.addWidget(text_label("ACTIVE WORKSPACE", "eyebrow"))
+        title_col.addWidget(text_label(self.site_key, "workspaceTitle"))
+        title_col.addStretch()
+        header_layout.addLayout(title_col)
+        site_menu_btn = QToolButton()
+        site_menu_btn.setObjectName("iconBtn")
+        site_menu_btn.setCursor(Qt.PointingHandCursor)
+        site_menu_btn.setIcon(make_icon('chevron', C_TEXT, 16))
+        site_menu_btn.setToolTip("Edit site")
+        site_menu_btn.clicked.connect(self.edit_site)
+        header_layout.addWidget(site_menu_btn)
+        header_layout.addStretch()
+
+        self.status_pill = QPushButton()
+        self.status_pill.setObjectName("statusPill")
+        self.status_pill.setCursor(Qt.PointingHandCursor)
+        self.status_pill.setToolTip("Test connection")
+        self.status_pill.setFixedHeight(42)
+        self.status_pill.clicked.connect(self.test_connection)
+        pill_layout = QHBoxLayout(self.status_pill)
+        pill_layout.setContentsMargins(14, 4, 14, 4)
+        pill_layout.setSpacing(8)
+        self.status_dot = text_label("●", "statusDot")
+        pill_layout.addWidget(self.status_dot)
+        pill_text = QVBoxLayout()
+        pill_text.setSpacing(0)
+        self.status_title = text_label("", "pillTitle")
+        self.status_detail = text_label("", "pillDetail")
+        pill_text.addWidget(self.status_title)
+        pill_text.addWidget(self.status_detail)
+        pill_layout.addLayout(pill_text)
+        pill_layout.addStretch()
+        header_layout.addWidget(self.status_pill)
+        self.set_connection_status(None)
+
+        settings_btn = QToolButton()
+        settings_btn.setObjectName("iconBtnOutline")
+        settings_btn.setCursor(Qt.PointingHandCursor)
+        settings_btn.setIcon(make_icon('settings', C_TEXT, 18))
+        settings_btn.setFixedSize(36, 36)
+        settings_btn.setToolTip("Preferences")
+        settings_btn.clicked.connect(lambda: self.window().open_settings())
+        header_layout.addWidget(settings_btn)
+        layout.addWidget(header)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(38, 44, 38, 38)
+        body.setSpacing(18)
+        layout.addLayout(body)
+
+        # Primary actions
+        primary_row = QHBoxLayout()
+        primary_row.setSpacing(14)
+        self.pull_btn = ActionButton('down', "Pull from remote", object_name="actionCard", icon_box=40)
         self.pull_btn.clicked.connect(self.run_pull)
-        sync_row.addWidget(self.pull_btn)
-        
-        self.push_btn = QPushButton("⬆ Push")
-        self.push_btn.setObjectName("pushBtn")
-        self.push_btn.setMinimumHeight(38)
-        self.push_btn.clicked.connect(self.run_push)
-        sync_row.addWidget(self.push_btn)
-        
-        self.watch_btn = QPushButton("👁 Watch")
-        self.watch_btn.setObjectName("watchBtn")
-        self.watch_btn.setMinimumHeight(38)
+        self.watch_btn = ActionButton('eye', "Watch changes", object_name="actionCard", icon_box=40, badge="OFF")
         self.watch_btn.clicked.connect(self.toggle_watch)
-        sync_row.addWidget(self.watch_btn)
-        
-        actions_layout.addLayout(sync_row)
-        
-        # Secondary actions row
-        secondary_row = QHBoxLayout()
-        secondary_row.setSpacing(8)
-        
-        self.test_connection_btn = QPushButton("🔌 Test Connection")
-        self.test_connection_btn.setMinimumHeight(32)
-        self.test_connection_btn.clicked.connect(self.test_connection)
-        secondary_row.addWidget(self.test_connection_btn)
-        
-        self.ssh_btn = QPushButton("🖥 SSH")
-        self.ssh_btn.setMinimumHeight(32)
-        self.ssh_btn.clicked.connect(self.open_ssh_terminal)
-        secondary_row.addWidget(self.ssh_btn)
-        
-        self.open_in_editor_btn = QPushButton("📝 Open in Editor")
-        self.open_in_editor_btn.setMinimumHeight(32)
+        self.open_in_editor_btn = ActionButton('code', "Open in editor", object_name="actionCard", icon_box=40)
         self.open_in_editor_btn.clicked.connect(self.open_in_editor)
-        secondary_row.addWidget(self.open_in_editor_btn)
-        
-        self.edit_btn = QPushButton("⚙️ Edit Site")
-        self.edit_btn.setMinimumHeight(32)
+        for btn in (self.pull_btn, self.watch_btn, self.open_in_editor_btn):
+            btn.setFixedHeight(76)
+            primary_row.addWidget(btn)
+        body.addLayout(primary_row)
+
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(18)
+
+        # Tools card
+        tools_card = QFrame()
+        tools_card.setObjectName("card")
+        tools_layout = QVBoxLayout(tools_card)
+        tools_layout.setContentsMargins(0, 0, 0, 0)
+        tools_layout.setSpacing(0)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("linkBtn")
+        refresh_btn.setIcon(make_icon('sync', C_TEXT, 14))
+        refresh_btn.setToolTip("Reload site configuration")
+        refresh_btn.clicked.connect(self.reload_config)
+        tools_layout.addWidget(self._card_header("Tools", "Site and server utilities", refresh_btn))
+
+        grid = QGridLayout()
+        grid.setSpacing(0)
+        self.test_connection_btn = ActionButton('plug', "Test connection", "Check server access")
+        self.test_connection_btn.clicked.connect(self.test_connection)
+        self.ssh_btn = ActionButton('terminal', "Open SSH", "Start terminal session")
+        self.ssh_btn.clicked.connect(self.open_ssh_terminal)
+        self.push_btn = ActionButton('up', "Push to remote", "Launch local project")
+        self.push_btn.clicked.connect(self.run_push)
+        self.edit_btn = ActionButton('settings', "Edit site", "Connection settings")
         self.edit_btn.clicked.connect(self.edit_site)
-        secondary_row.addWidget(self.edit_btn)
-        
-        actions_layout.addLayout(secondary_row)
-        
-        # Permissions row
-        permissions_row = QHBoxLayout()
-        permissions_row.setSpacing(8)
-        
-        self.open_rights_btn = QPushButton("🔓 Open Rights")
-        self.open_rights_btn.setMinimumHeight(32)
+        self.open_rights_btn = ActionButton('unlock', "Open rights", "Enable file writes")
         self.open_rights_btn.setToolTip("Open file permissions on server (chmod 755/644)")
         self.open_rights_btn.clicked.connect(self.open_rights)
-        permissions_row.addWidget(self.open_rights_btn)
-        
-        self.close_rights_btn = QPushButton("🔒 Close Rights")
-        self.close_rights_btn.setMinimumHeight(32)
+        self.close_rights_btn = ActionButton('lock', "Close rights", "Secure file writes")
         self.close_rights_btn.setToolTip("Restrict file permissions on server (secure WordPress)")
         self.close_rights_btn.clicked.connect(self.close_rights)
-        permissions_row.addWidget(self.close_rights_btn)
-        
-        self.clean_local_btn = QPushButton("🗑 Clean Local Files")
-        self.clean_local_btn.setMinimumHeight(32)
-        self.clean_local_btn.setToolTip("Delete local files (keeps server files safe)")
-        self.clean_local_btn.clicked.connect(self.clean_local_files)
-        permissions_row.addWidget(self.clean_local_btn)
-        
-        actions_layout.addLayout(permissions_row)
-
-        # Remote file tools row
-        remote_files_row = QHBoxLayout()
-        remote_files_row.setSpacing(8)
-
-        self.edit_wp_config_btn = QPushButton("Edit wp-config")
-        self.edit_wp_config_btn.setMinimumHeight(32)
+        self.edit_wp_config_btn = ActionButton('file', "Edit wp-config", "Configuration file")
         self.edit_wp_config_btn.setToolTip("Edit remote wp-config.php (auto-detected from REMOTE_ROOT)")
         self.edit_wp_config_btn.clicked.connect(self.open_wp_config_editor)
-        remote_files_row.addWidget(self.edit_wp_config_btn)
-
-        self.view_debug_log_btn = QPushButton("View debug.log")
-        self.view_debug_log_btn.setMinimumHeight(32)
+        self.view_debug_log_btn = ActionButton('eye', "View debug.log", "Inspect recent errors")
         self.view_debug_log_btn.setToolTip("View latest 2000 lines of remote debug.log (auto-detected from REMOTE_ROOT)")
         self.view_debug_log_btn.clicked.connect(self.view_debug_log)
-        remote_files_row.addWidget(self.view_debug_log_btn)
+        tools = [
+            self.test_connection_btn, self.ssh_btn,
+            self.push_btn, self.edit_btn,
+            self.open_rights_btn, self.close_rights_btn,
+            self.edit_wp_config_btn, self.view_debug_log_btn,
+        ]
+        for i, btn in enumerate(tools):
+            if i % 2 == 0:
+                btn.setObjectName("toolRowLeft")
+            btn.setFixedHeight(61)
+            grid.addWidget(btn, i // 2, i % 2)
+        tools_layout.addLayout(grid)
 
+        danger_row = QHBoxLayout()
+        danger_row.setContentsMargins(8, 10, 8, 10)
+        danger_row.setSpacing(4)
+        self.clean_local_btn = QPushButton("Clean local files")
+        self.clean_local_btn.setIcon(make_icon('trash', C_DANGER, 14))
+        self.clean_local_btn.setToolTip("Delete local files (keeps server files safe)")
+        self.clean_local_btn.clicked.connect(self.clean_local_files)
         self.clear_debug_log_btn = QPushButton("Clear debug.log")
-        self.clear_debug_log_btn.setMinimumHeight(32)
+        self.clear_debug_log_btn.setIcon(make_icon('x', C_DANGER, 14))
         self.clear_debug_log_btn.setToolTip("Erase content of remote debug.log (auto-detected from REMOTE_ROOT)")
         self.clear_debug_log_btn.clicked.connect(self.clear_debug_log)
-        remote_files_row.addWidget(self.clear_debug_log_btn)
+        for btn in (self.clean_local_btn, self.clear_debug_log_btn):
+            btn.setObjectName("dangerLink")
+            btn.setCursor(Qt.PointingHandCursor)
+            danger_row.addWidget(btn)
+        danger_row.addStretch()
+        tools_layout.addLayout(danger_row)
+        tools_layout.addStretch()
+        cards_row.addWidget(tools_card, 5)
 
-        actions_layout.addLayout(remote_files_row)
-        actions_group.setLayout(actions_layout)
-        layout.addWidget(actions_group)
-        
-        # Console output
-        output_group = QGroupBox("Console")
-        output_layout = QVBoxLayout()
-        output_layout.setSpacing(8)
-        
-        self.output_text = QTextEdit()
-        self.output_text.setReadOnly(True)
-        self.output_text.setFont(QFont("Monaco", 10))
-        self.output_text.setMinimumHeight(240)
-        self.output_text.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid rgba(0, 0, 0, 0.06);
-                border-radius: 6px;
-                background-color: #fafbfc;
-                color: #1f2937;
-                font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-                font-size: 11px;
-                padding: 12px;
-                line-height: 1.5;
-            }
-        """)
-        output_layout.addWidget(self.output_text)
-        
-        # Clear button
-        clear_layout = QHBoxLayout()
-        clear_layout.addStretch()
+        # Activity card with console
+        activity_card = QFrame()
+        activity_card.setObjectName("card")
+        activity_layout = QVBoxLayout(activity_card)
+        activity_layout.setContentsMargins(0, 0, 0, 12)
+        activity_layout.setSpacing(12)
         clear_btn = QPushButton("Clear")
-        clear_btn.setObjectName("secondaryBtn")
-        clear_btn.setMaximumWidth(80)
+        clear_btn.setObjectName("linkBtn")
         clear_btn.clicked.connect(self.clear_output)
-        clear_layout.addWidget(clear_btn)
-        output_layout.addLayout(clear_layout)
-        
-        output_group.setLayout(output_layout)
-        layout.addWidget(output_group)
-        
-        # Initial log message
-        self.log_output(f"⚡ Ready: {self.site_key}\n", "info")
+        activity_layout.addWidget(self._card_header("Activity", "Live operation output", clear_btn))
+
+        console = QFrame()
+        console.setObjectName("console")
+        console_layout = QVBoxLayout(console)
+        console_layout.setContentsMargins(0, 0, 0, 0)
+        console_layout.setSpacing(0)
+        console_header = QFrame()
+        console_header.setObjectName("consoleHeader")
+        console_header.setFixedHeight(38)
+        console_header_layout = QHBoxLayout(console_header)
+        console_header_layout.setContentsMargins(14, 0, 14, 0)
+        console_header_layout.setSpacing(8)
+        console_header_layout.addWidget(icon_label('terminal', "#e6efe9", 14, object_name="plainIcon"))
+        console_header_layout.addWidget(text_label("Console", "consoleTitle"))
+        console_header_layout.addStretch()
+        self.live_label = text_label("", "liveLabel")
+        console_header_layout.addWidget(self.live_label)
+        console_layout.addWidget(console_header)
+
+        self.output_text = QTextEdit()
+        self.output_text.setObjectName("consoleText")
+        self.output_text.setReadOnly(True)
+        self.output_text.setFont(QFont("Menlo", 10))
+        self.output_text.setPlaceholderText("No activity yet.")
+        self.output_text.setMinimumHeight(260)
+        console_layout.addWidget(self.output_text)
+
+        console_wrap = QHBoxLayout()
+        console_wrap.setContentsMargins(12, 0, 12, 0)
+        console_wrap.addWidget(console)
+        activity_layout.addLayout(console_wrap, 1)
+        cards_row.addWidget(activity_card, 3)
+
+        body.addLayout(cards_row)
+        body.addStretch()
+        self._update_live()
+
+    def _card_header(self, title, subtitle, action_widget):
+        header = QFrame()
+        header.setObjectName("cardHeader")
+        header.setFixedHeight(66)
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(18, 0, 18, 0)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.addStretch()
+        col.addWidget(text_label(title, "cardTitle"))
+        col.addWidget(text_label(subtitle, "cardSubtitle"))
+        col.addStretch()
+        layout.addLayout(col)
+        layout.addStretch()
+        action_widget.setCursor(Qt.PointingHandCursor)
+        layout.addWidget(action_widget)
+        return header
+
+    def set_connection_status(self, ok, detail=None):
+        """Update header pill: ok=None (untested), True (connected), False (failed)"""
+        title, color = {None: ("Not tested", "#b4bcb7"), True: ("Connected", "#22c55e"), False: ("Unreachable", C_DANGER)}[ok]
+        self.status_title.setText(title)
+        self.status_detail.setText(detail or f"SSH · {self.config.get('SSH_HOST', 'no host')}")
+        self.status_dot.setStyleSheet(f"color: {color};")
+        self.status_pill.setFixedWidth(self.status_pill.layout().sizeHint().width())
+
+    def _update_live(self):
+        """Console header indicator: LIVE while a command or watch runs"""
+        busy = self.is_watching() or bool(self.current_thread and self.current_thread.isRunning())
+        color = "#4ade80" if busy else "#6b7f73"
+        self.live_label.setText(f"<span style='color:{color}'>●</span>&nbsp; {'LIVE' if busy else 'IDLE'}")
+
+    def reload_config(self):
+        self.config = self.load_config()
+        self.set_connection_status(None)
+        self.log_output("✓ Site configuration reloaded\n", "info")
     
     def is_watching(self):
         """Check if watch mode is active"""
         return self.watch_thread and self.watch_thread.isRunning()
-    
-    def get_status_icon(self):
-        """Get status icon for tab"""
-        if self.is_watching():
-            return "🟢"
-        return "⚪"
-    
-    def get_status_color(self):
-        """Get background color for tab based on status"""
-        if self.is_watching():
-            return "#d1fae5"  # Light green
-        return None  # Default
     
     def run_pull(self):
         """Execute pull command"""
@@ -1849,11 +2054,12 @@ fi
         self.watch_thread.finished_signal.connect(self.on_watch_finished)
         self.watch_thread.start()
         
-        self.watch_btn.setText("⏹ Stop")
-        self.watch_btn.setObjectName("watchBtnActive")
-        self.watch_btn.setStyleSheet("")
+        self.watch_btn.setText("Watching changes")
+        self.watch_btn.badge.setText("ON")
+        self.watch_btn.setProperty("active", True)
         self.watch_btn.style().unpolish(self.watch_btn)
         self.watch_btn.style().polish(self.watch_btn)
+        self._update_live()
         
         self.pull_btn.setEnabled(False)
         self.push_btn.setEnabled(False)
@@ -1868,7 +2074,7 @@ fi
             self.log_output("\nStopping watch mode...\n", "warning")
             self._stopping_watch = True
             
-            self.watch_btn.setText("⏸ Stopping...")
+            self.watch_btn.setText("Stopping...")
             self.watch_btn.setEnabled(False)
             
             self.watch_thread.stop()
@@ -1935,12 +2141,13 @@ fi
     
     def _reset_watch_ui(self):
         """Reset watch button and UI"""
-        self.watch_btn.setText("👁 Watch")
-        self.watch_btn.setObjectName("watchBtn")
-        self.watch_btn.setStyleSheet("")
+        self.watch_btn.setText("Watch changes")
+        self.watch_btn.badge.setText("OFF")
+        self.watch_btn.setProperty("active", False)
         self.watch_btn.style().unpolish(self.watch_btn)
         self.watch_btn.style().polish(self.watch_btn)
         self.watch_btn.setEnabled(True)
+        QTimer.singleShot(0, self._update_live)
         
         self.pull_btn.setEnabled(True)
         self.push_btn.setEnabled(True)
@@ -1965,6 +2172,7 @@ fi
             lambda code: self.on_command_finished(code, action_name)
         )
         self.current_thread.start()
+        self._update_live()
     
     def on_command_finished(self, return_code, action_name):
         """Handle command completion"""
@@ -1983,6 +2191,7 @@ fi
             self.current_thread.blockSignals(True)
             self.current_thread.deleteLater()
             self.current_thread = None
+        self._update_live()
     
     def test_connection(self):
         """Test SSH connection"""
@@ -2014,11 +2223,14 @@ fi
         self.test_connection_btn.setText("Testing...")
         
         try:
+            started = time.time()
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+            elapsed_ms = int((time.time() - started) * 1000)
             
             self.test_connection_btn.setEnabled(True)
-            self.test_connection_btn.setText("🔌 Test Connection")
+            self.test_connection_btn.setText("Test connection")
             
+            self.set_connection_status(result.returncode == 0, f"SSH · {elapsed_ms} ms" if result.returncode == 0 else None)
             if result.returncode == 0:
                 self.log_output(f"✓ Connection successful!\n", "success")
                 QMessageBox.information(
@@ -2034,12 +2246,13 @@ fi
                 )
         except subprocess.TimeoutExpired:
             self.test_connection_btn.setEnabled(True)
-            self.test_connection_btn.setText("🔌 Test Connection")
+            self.test_connection_btn.setText("Test connection")
+            self.set_connection_status(False)
             self.log_output(f"✗ Connection timeout\n", "error")
             QMessageBox.warning(self, "Connection Timeout", "Connection timed out.")
         except Exception as e:
             self.test_connection_btn.setEnabled(True)
-            self.test_connection_btn.setText("🔌 Test Connection")
+            self.test_connection_btn.setText("Test connection")
             self.log_output(f"✗ Error: {e}\n", "error")
     
     def open_ssh_terminal(self):
@@ -2216,7 +2429,7 @@ fi
     def on_open_rights_finished(self, success, message):
         """Handle completion of open rights operation"""
         self.open_rights_btn.setEnabled(True)
-        self.open_rights_btn.setText("🔓 Open Rights")
+        self.open_rights_btn.setText("Open rights")
         self._set_remote_file_buttons_enabled(True)
         self.permissions_thread = None
     
@@ -2280,7 +2493,7 @@ fi
     def on_close_rights_finished(self, success, message):
         """Handle completion of close rights operation"""
         self.close_rights_btn.setEnabled(True)
-        self.close_rights_btn.setText("🔒 Close Rights")
+        self.close_rights_btn.setText("Close rights")
         self._set_remote_file_buttons_enabled(True)
         self.permissions_thread = None
     
@@ -2374,20 +2587,11 @@ fi
     
     def log_output(self, text, level=None):
         """Add text to output with optional styling"""
-        if level == "error":
-            self.output_text.setTextColor(QColor("#dc2626"))
-        elif level == "success":
-            self.output_text.setTextColor(QColor("#16a34a"))
-        elif level == "warning":
-            self.output_text.setTextColor(QColor("#d97706"))
-        elif level == "info":
-            self.output_text.setTextColor(QColor("#2563eb"))
-        else:
-            self.output_text.setTextColor(QColor("#374151"))
-        
+        colors = {"error": "#f87171", "success": "#4ade80", "warning": "#fbbf24", "info": "#93c5fd"}
+        self.output_text.setTextColor(QColor(colors.get(level, C_CONSOLE_TEXT)))
         self.output_text.append(text.rstrip())
         self.output_text.moveCursor(QTextCursor.End)
-        self.output_text.setTextColor(QColor("#374151"))
+        self.output_text.setTextColor(QColor(C_CONSOLE_TEXT))
     
     def append_output(self, text):
         """Append output from thread"""
@@ -2420,14 +2624,13 @@ fi
                     self.sync_timeout_timer = None
                 QTimer.singleShot(300, lambda: self.sync_status_changed.emit(self.site_key, False, ""))
         
-        self.output_text.setTextColor(QColor("#374151"))
+        self.output_text.setTextColor(QColor(C_CONSOLE_TEXT))
         self.output_text.insertPlainText(text)
         self.output_text.moveCursor(QTextCursor.End)
     
     def clear_output(self):
         """Clear the output area"""
         self.output_text.clear()
-        self.log_output(f"⚡ Ready: {self.site_key}\n", "info")
     
     def cleanup(self):
         """Cleanup threads before closing"""
@@ -2449,35 +2652,47 @@ fi
 
 
 class TabManager:
-    """Manages all site tabs"""
+    """Manages open sites: sidebar entries + stacked site views"""
     
-    def __init__(self, tab_widget, settings_manager):
-        self.tab_widget = tab_widget
+    def __init__(self, stack, site_list, settings_manager):
+        self.stack = stack
+        self.site_list = site_list
         self.settings_manager = settings_manager
         self.site_tabs = {}  # site_key -> SiteTab
     
+    def _item(self, site_key):
+        for row in range(self.site_list.count()):
+            item = self.site_list.item(row)
+            if item.data(Qt.UserRole) == site_key:
+                return item
+        return None
+    
     def add_tab(self, site_tab):
-        """Add a new site tab"""
+        """Add a site to the sidebar and view stack"""
         self.site_tabs[site_tab.site_key] = site_tab
-        icon = site_tab.get_status_icon()
-        index = self.tab_widget.addTab(site_tab, f"{icon} {site_tab.site_key}")
-        
-        # Set tab background color
-        color = site_tab.get_status_color()
-        if color:
-            self.tab_widget.tabBar().setTabTextColor(index, QColor("#065f46"))
-        
-        return index
+        self.stack.addWidget(site_tab)
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, site_tab.site_key)
+        item.setSizeHint(QSize(0, 58))
+        self.site_list.addItem(item)
+        self.site_list.setItemWidget(item, SiteListItem(site_tab.site_key))
+        return item
+    
+    def select(self, site_key):
+        item = self._item(site_key)
+        if item:
+            self.site_list.setCurrentItem(item)
     
     def remove_tab(self, site_key):
-        """Remove a tab"""
+        """Remove a site from the sidebar and view stack"""
         if site_key in self.site_tabs:
-            site_tab = self.site_tabs[site_key]
-            index = self.tab_widget.indexOf(site_tab)
-            if index >= 0:
-                self.tab_widget.removeTab(index)
+            site_tab = self.site_tabs.pop(site_key)
+            item = self._item(site_key)
+            if item:
+                self.site_list.takeItem(self.site_list.row(item))
+            self.stack.removeWidget(site_tab)
             site_tab.cleanup()
-            del self.site_tabs[site_key]
+            site_tab.deleteLater()
     
     def get_tab(self, site_key):
         """Get a site tab by key"""
@@ -2489,45 +2704,28 @@ class TabManager:
     
     def get_watching_count(self):
         """Get number of sites currently watching"""
-        count = 0
-        for tab in self.site_tabs.values():
-            if tab.is_watching():
-                count += 1
-        return count
+        return len(self.get_watching_sites())
     
     def get_watching_sites(self):
         """Get list of site keys currently watching"""
-        watching = []
-        for site_key, tab in self.site_tabs.items():
-            if tab.is_watching():
-                watching.append(site_key)
-        return watching
+        return [key for key, tab in self.site_tabs.items() if tab.is_watching()]
     
     def update_tab_visual(self, site_key):
-        """Update tab visual indicators"""
-        if site_key in self.site_tabs:
-            site_tab = self.site_tabs[site_key]
-            index = self.tab_widget.indexOf(site_tab)
-            if index >= 0:
-                icon = site_tab.get_status_icon()
-                self.tab_widget.setTabText(index, f"{icon} {site_key}")
-                
-                # Update tab color
-                color = site_tab.get_status_color()
-                if color:
-                    self.tab_widget.tabBar().setTabTextColor(index, QColor("#065f46"))
-                else:
-                    self.tab_widget.tabBar().setTabTextColor(index, QColor("#1f2937"))
+        """Update sidebar watch indicator"""
+        item = self._item(site_key)
+        if item and site_key in self.site_tabs:
+            self.site_list.itemWidget(item).set_watching(bool(self.site_tabs[site_key].is_watching()))
     
     def save_session(self):
-        """Save current tab session"""
-        open_tabs = list(self.site_tabs.keys())
-        self.settings_manager.set('open_tabs', open_tabs)
+        """Save open sites and the active one"""
+        current = self.site_list.currentItem()
+        self.settings_manager.set('open_tabs', self.get_open_site_keys())
+        self.settings_manager.set('active_site', current.data(Qt.UserRole) if current else None)
         self.settings_manager.save_settings()
     
     def get_open_site_keys(self):
         """Get list of currently open site keys"""
-        return list(self.site_tabs.keys())
+        return [self.site_list.item(row).data(Qt.UserRole) for row in range(self.site_list.count())]
 
 
 class OpenSiteDialog(QDialog):
@@ -3014,7 +3212,8 @@ class WPSyncGUI(QMainWindow):
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle("Webmix Sync Starter")
-        self.setGeometry(100, 100, 1000, 700)
+        self.setGeometry(100, 100, 1320, 860)
+        self.setMinimumSize(1080, 720)
         
         # Apply styles
         self.apply_styles()
@@ -3045,231 +3244,212 @@ class WPSyncGUI(QMainWindow):
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
         
-        # Central widget with absolute positioning for + button
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QHBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+        main_layout.addWidget(self._build_sidebar())
         
-        # Tab widget
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.setMovable(True)
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        # Site views; index 0 is the empty state
+        self.stack = QStackedWidget()
+        self.stack.setObjectName("content")
+        empty = QWidget()
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.addStretch()
+        empty_title = QLabel("No site open")
+        empty_title.setObjectName("workspaceTitle")
+        empty_title.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(empty_title)
+        empty_sub = QLabel("Add a site from the sidebar to get started.")
+        empty_sub.setObjectName("cardSubtitle")
+        empty_sub.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(empty_sub)
+        empty_layout.addStretch()
+        self.stack.addWidget(empty)
+        main_layout.addWidget(self.stack, 1)
         
-        main_layout.addWidget(self.tab_widget)
+        self.tab_manager = TabManager(self.stack, self.site_list, self.settings_manager)
+    
+    def _build_sidebar(self):
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(250)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(16, 24, 16, 16)
+        layout.setSpacing(0)
         
-        # Add + button with absolute positioning
-        self.add_tab_button = QPushButton("+", central_widget)
-        self.add_tab_button.setObjectName("addTabBtn")
-        self.add_tab_button.setFixedSize(32, 32)
-        self.add_tab_button.setToolTip("Open new site tab")
-        self.add_tab_button.clicked.connect(self.open_site_picker)
-        self.add_tab_button.raise_()
+        brand = QHBoxLayout()
+        brand.setContentsMargins(8, 0, 0, 0)
+        brand.setSpacing(12)
+        brand.addWidget(icon_label('sync', "#d6e6dc", 18, 36, "brandIcon"))
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(0)
+        brand_text.addWidget(text_label("Webmix", "brandTitle"))
+        brand_text.addWidget(text_label("Sync Starter", "brandSub"))
+        brand.addLayout(brand_text)
+        brand.addStretch()
+        layout.addLayout(brand)
+        layout.addSpacing(32)
         
-        # Position button in top-right
-        self.add_tab_button.move(central_widget.width() - 44, 6)
+        section = text_label("WORKSPACES", "sectionLabel")
+        section.setContentsMargins(10, 0, 0, 8)
+        layout.addWidget(section)
         
-        # Initialize tab manager
-        self.tab_manager = TabManager(self.tab_widget, self.settings_manager)
+        self.site_list = QListWidget()
+        self.site_list.setObjectName("siteList")
+        self.site_list.setFocusPolicy(Qt.NoFocus)
+        self.site_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.site_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.site_list.setSpacing(2)
+        self.site_list.viewport().setCursor(Qt.PointingHandCursor)
+        self.site_list.currentItemChanged.connect(self.on_site_selected)
+        self.site_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.site_list.customContextMenuRequested.connect(self.show_site_context_menu)
+        layout.addWidget(self.site_list, 1)
         
-        # Status bar
-        self.statusBar().showMessage("Ready")
+        add_btn = QPushButton("Add site")
+        add_btn.setObjectName("addSiteBtn")
+        add_btn.setIcon(make_icon('plus', "#c3d3c9", 16))
+        add_btn.setCursor(Qt.PointingHandCursor)
+        add_btn.setToolTip("Open a configured site")
+        add_btn.clicked.connect(self.open_site_picker)
+        layout.addWidget(add_btn)
+        layout.addSpacing(12)
+        
+        divider = QFrame()
+        divider.setObjectName("sidebarDivider")
+        divider.setFixedHeight(1)
+        layout.addWidget(divider)
+        layout.addSpacing(14)
+        
+        footer = QHBoxLayout()
+        footer.setContentsMargins(6, 0, 0, 0)
+        footer.setSpacing(10)
+        footer.addStretch()
+        
+        more_btn = QToolButton()
+        more_btn.setObjectName("moreBtn")
+        more_btn.setCursor(Qt.PointingHandCursor)
+        more_btn.setToolTip("More")
+        more_btn.setIcon(make_icon('more', "#c3d3c9", 18))
+        more_btn.setPopupMode(QToolButton.InstantPopup)
+        more_menu = QMenu(more_btn)
+        more_menu.addAction("New Site...", self.create_new_site)
+        more_menu.addAction("Preferences...", self.open_settings)
+        if UPDATE_CHECKER_AVAILABLE:
+            more_menu.addAction("Check for Updates...", self.check_for_updates)
+        more_menu.addAction(f"About v{APP_VERSION}", self.show_about)
+        more_menu.addSeparator()
+        more_menu.addAction("Quit", self.quit_application)
+        more_btn.setMenu(more_menu)
+        footer.addWidget(more_btn)
+        layout.addLayout(footer)
+        return sidebar
+    
+    def on_site_selected(self, current, previous):
+        if current:
+            self.stack.setCurrentWidget(self.tab_manager.get_tab(current.data(Qt.UserRole)))
+        else:
+            self.stack.setCurrentIndex(0)
+        self.tab_manager.save_session()
+    
+    def show_site_context_menu(self, pos):
+        item = self.site_list.itemAt(pos)
+        if not item:
+            return
+        menu = QMenu(self)
+        menu.addAction("Close site", lambda: self.close_tab(item.data(Qt.UserRole)))
+        menu.exec_(self.site_list.mapToGlobal(pos))
     
     def apply_styles(self):
         """Apply application styles"""
-        self.setStyleSheet("""
-            /* Main window */
-            QMainWindow {
-                background-color: #f8f9fa;
-            }
+        self.setStyleSheet(f"""
+            QMainWindow, QStackedWidget#content {{ background-color: #f3f5f2; }}
+            QWidget {{ font-size: 13px; color: {C_TEXT}; }}
+            QLabel {{ background: transparent; }}
             
-            /* Group boxes - cards with shadow */
-            QGroupBox {
-                font-weight: 600;
-                font-size: 11px;
-                border: none;
-                border-radius: 8px;
-                margin-top: 12px;
-                padding-top: 16px;
-                background-color: #ffffff;
-                /* Layered shadows for depth */
-                border: 1px solid rgba(0, 0, 0, 0.06);
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 12px;
-                padding: 0 8px;
-                color: #1f2937;
-                font-weight: 600;
-                letter-spacing: 0.3px;
-            }
+            /* Sidebar */
+            QFrame#sidebar {{ background-color: #13261c; }}
+            QLabel#brandIcon {{ background-color: #1d3a2b; border: 1px solid #2c4d3b; border-radius: 9px; }}
+            QLabel#brandTitle {{ color: #ffffff; font-size: 16px; font-weight: 600; }}
+            QLabel#brandSub {{ color: #8fa699; font-size: 12px; }}
+            QLabel#sectionLabel {{ color: #8fa699; font-size: 10px; font-weight: 600; letter-spacing: 1.5px; }}
+            QListWidget#siteList {{ background: transparent; border: none; outline: none; }}
+            QListWidget#siteList::item {{ border-radius: 8px; color: transparent; }}
+            QListWidget#siteList::item:hover {{ background-color: #1a3226; }}
+            QListWidget#siteList::item:selected {{ background-color: #213d2f; }}
+            QLabel#siteAvatar {{ color: #e6efe9; font-weight: 600; border: 1px solid #3a5a48; border-radius: 6px; background-color: #1a3226; }}
+            QLabel#siteName {{ color: #f1f6f2; font-size: 13px; font-weight: 500; }}
+            QLabel#siteSub {{ color: #7f9789; font-size: 11px; }}
+            QLabel#liveDot {{ color: #4ade80; font-size: 9px; }}
+            QPushButton#addSiteBtn {{ background: transparent; border: none; color: #c3d3c9; text-align: left; padding: 10px; }}
+            QPushButton#addSiteBtn:hover {{ color: #ffffff; background-color: #1a3226; border-radius: 8px; }}
+            QFrame#sidebarDivider {{ background-color: #2a4335; }}
+            QToolButton#moreBtn {{ background: transparent; border: none; padding: 4px; }}
+            QToolButton#moreBtn::menu-indicator {{ image: none; }}
+            QToolButton#moreBtn:hover {{ background-color: #213d2f; border-radius: 6px; }}
             
-            /* Base button style */
-            QPushButton {
-                background-color: #ffffff;
-                color: #374151;
-                border: 1px solid rgba(0, 0, 0, 0.08);
-                border-radius: 6px;
-                padding: 8px 14px;
-                font-weight: 500;
-                font-size: 11px;
-                min-height: 28px;
-            }
-            QPushButton:hover {
-                background-color: #f9fafb;
-                border-color: rgba(0, 0, 0, 0.12);
-            }
-            QPushButton:pressed {
-                background-color: #f3f4f6;
-            }
-            QPushButton:disabled {
-                background-color: #f3f4f6;
-                color: #9ca3af;
-                border-color: rgba(0, 0, 0, 0.04);
-            }
+            /* Header */
+            QFrame#header {{ background-color: #ffffff; border-bottom: 1px solid {C_BORDER}; }}
+            QLabel#iconBoxOutline {{ border: 1px solid {C_BORDER}; border-radius: 10px; background: #ffffff; }}
+            QLabel#eyebrow {{ color: {C_MUTED}; font-size: 10px; font-weight: 500; letter-spacing: 1.5px; }}
+            QLabel#workspaceTitle {{ font-size: 18px; }}
+            QToolButton#iconBtn {{ background: transparent; border: none; padding: 4px; }}
+            QToolButton#iconBtn:hover {{ background: #f0f3f1; border-radius: 6px; }}
+            QToolButton#iconBtnOutline {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 9px; }}
+            QToolButton#iconBtnOutline:hover {{ background: #f6f8f6; }}
+            QPushButton#statusPill {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 8px; }}
+            QPushButton#statusPill:hover {{ background: #f8faf8; }}
+            QLabel#statusDot {{ font-size: 10px; }}
+            QLabel#pillTitle {{ font-size: 11px; font-weight: 600; }}
+            QLabel#pillDetail {{ font-size: 9px; color: {C_MUTED}; }}
             
-            /* Primary action buttons */
-            QPushButton#pullBtn {
-                background-color: #eff6ff;
-                color: #1e40af;
-                border: 1px solid #bfdbfe;
-            }
-            QPushButton#pullBtn:hover {
-                background-color: #dbeafe;
-                border-color: #93c5fd;
-            }
-            QPushButton#pullBtn:pressed {
-                background-color: #bfdbfe;
-            }
+            /* Cards */
+            QFrame#card {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 12px; }}
+            QFrame#cardHeader {{ background: transparent; border: none; border-bottom: 1px solid {C_BORDER}; border-radius: 0; }}
+            QLabel#cardTitle {{ font-size: 14px; }}
+            QLabel#cardSubtitle {{ font-size: 11px; color: {C_MUTED}; }}
+            QPushButton#linkBtn {{ background: transparent; border: none; border-radius: 6px; font-size: 11px; padding: 5px 8px; }}
+            QPushButton#linkBtn:hover {{ color: {C_ACCENT}; background: #eef4f0; }}
+            QPushButton#linkBtn:pressed {{ background: #e2ece5; }}
+            QPushButton#dangerLink {{ background: transparent; border: none; border-radius: 6px; color: {C_DANGER}; font-size: 11px; padding: 6px 8px; }}
+            QPushButton#dangerLink:hover {{ color: #8e2318; background: #fbeeec; }}
+            QPushButton#dangerLink:pressed {{ background: #f6dfdb; }}
+            QPushButton#dangerLink:disabled {{ color: #d9a8a2; }}
             
-            QPushButton#pushBtn {
-                background-color: #fef3c7;
-                color: #92400e;
-                border: 1px solid #fde68a;
-            }
-            QPushButton#pushBtn:hover {
-                background-color: #fde68a;
-                border-color: #fcd34d;
-            }
-            QPushButton#pushBtn:pressed {
-                background-color: #fcd34d;
-            }
+            /* Action cards and tool rows */
+            QPushButton#actionCard {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 12px; }}
+            QPushButton#actionCard:hover {{ border-color: #c9d6cd; background: #fbfcfb; }}
+            QPushButton#actionCard[active="true"] {{ border-color: #8cc9a4; background: #f2faf5; }}
+            QPushButton#actionCard QLabel#iconBox {{ background-color: #e5f1e9; border-radius: 9px; }}
+            QPushButton#actionCard QLabel#rowTitle {{ font-size: 13px; font-weight: 500; }}
+            QPushButton#toolRow, QPushButton#toolRowLeft {{ background: #ffffff; border: none; border-top: 1px solid {C_BORDER}; border-radius: 0; }}
+            QPushButton#toolRowLeft {{ border-right: 1px solid {C_BORDER}; }}
+            QPushButton#toolRow:hover, QPushButton#toolRowLeft:hover {{ background: #f3f7f4; }}
+            QPushButton#toolRow:pressed, QPushButton#toolRowLeft:pressed {{ background: #eaf1ec; }}
+            QPushButton#actionCard:pressed {{ background: #f1f6f2; }}
+            QLabel#iconBox {{ background-color: #f0f3f1; border-radius: 8px; }}
+            QLabel#rowTitle {{ font-size: 12px; font-weight: 500; }}
+            QLabel#rowSubtitle {{ font-size: 10px; color: {C_MUTED}; }}
+            QLabel#rowTitle:disabled, QLabel#rowSubtitle:disabled {{ color: #b4bcb7; }}
+            QLabel#badge {{ background: #f0f3f1; color: {C_MUTED}; border: 1px solid {C_BORDER}; border-radius: 4px; font-size: 9px; font-weight: 600; padding: 2px 6px; }}
+            QPushButton#actionCard[active="true"] QLabel#badge {{ background: #dcf3e4; color: {C_ACCENT}; border-color: #a9dbbd; }}
             
-            /* Watch button states */
-            QPushButton#watchBtn {
-                background-color: #fee2e2;
-                color: #991b1b;
-                border: 1px solid #fca5a5;
-                font-weight: 600;
-            }
-            QPushButton#watchBtn:hover {
-                background-color: #fecaca;
-                border-color: #f87171;
-            }
-            QPushButton#watchBtn:pressed {
-                background-color: #fca5a5;
-            }
+            /* Console */
+            QFrame#console {{ background-color: #13241b; border-radius: 10px; }}
+            QFrame#consoleHeader {{ background: transparent; border-bottom: 1px solid #22392c; }}
+            QLabel#consoleTitle {{ color: #e6efe9; font-size: 11px; }}
+            QLabel#liveLabel {{ color: #8fa699; font-size: 9px; letter-spacing: 1px; }}
+            QTextEdit#consoleText {{
+                background: transparent; border: none; color: {C_CONSOLE_TEXT};
+                font-family: 'Menlo', 'Monaco', monospace; font-size: 11px; padding: 10px;
+                selection-background-color: #2e5440;
+            }}
             
-            QPushButton#watchBtnActive {
-                background-color: #d1fae5;
-                color: #065f46;
-                border: 1px solid #6ee7b7;
-                font-weight: 600;
-            }
-            QPushButton#watchBtnActive:hover {
-                background-color: #a7f3d0;
-                border-color: #34d399;
-            }
-            QPushButton#watchBtnActive:pressed {
-                background-color: #6ee7b7;
-            }
-            
-            /* Secondary buttons */
-            QPushButton#secondaryBtn {
-                background-color: #ffffff;
-                color: #6b7280;
-                border: 1px solid rgba(0, 0, 0, 0.08);
-            }
-            QPushButton#secondaryBtn:hover {
-                background-color: #f9fafb;
-                color: #374151;
-                border-color: rgba(0, 0, 0, 0.12);
-            }
-            
-            /* Tab widget - sleeker design */
-            QTabWidget::pane {
-                border: none;
-                background-color: #ffffff;
-                border-radius: 8px;
-                border: 1px solid rgba(0, 0, 0, 0.06);
-                margin-top: -1px;
-            }
-            
-            QTabWidget::tab-bar {
-                alignment: left;
-            }
-            
-            QTabBar {
-                background-color: transparent;
-            }
-            
-            QTabBar::tab {
-                background-color: transparent;
-                color: #6b7280;
-                border: none;
-                border-bottom: 2px solid transparent;
-                padding: 10px 10px 10px 10px;
-                margin-right: 4px;
-                min-height: 24px;
-                font-weight: 500;
-                font-size: 11px;
-            }
-            QTabBar::tab:selected {
-                background-color: transparent;
-                color: #1f2937;
-                border-bottom: 2px solid #2563eb;
-                font-weight: 600;
-            }
-            QTabBar::tab:hover:!selected {
-                background-color: rgba(0, 0, 0, 0.02);
-                color: #374151;
-                border-bottom: 2px solid #e5e7eb;
-            }
-            
-            /* Tab close button styling */
-            QTabBar QToolButton {
-                background: transparent;
-                border: none;
-                padding: 4px;
-                margin: 0px 8px 0px 0px;
-                width: 16px;
-                height: 16px;
-            }
-            QTabBar QToolButton:hover {
-                background-color: rgba(239, 68, 68, 0.15);
-                border-radius: 3px;
-            }
-            
-            /* Add tab button */
-            QPushButton#addTabBtn {
-                background-color: #ffffff;
-                color: #2563eb;
-                border: 1px solid rgba(37, 99, 235, 0.2);
-                border-radius: 6px;
-                font-size: 18px;
-                font-weight: 600;
-                padding: 0px;
-            }
-            QPushButton#addTabBtn:hover {
-                background-color: #eff6ff;
-                border-color: #2563eb;
-            }
-            QPushButton#addTabBtn:pressed {
-                background-color: #dbeafe;
-            }
+            QMenu {{ background: #ffffff; border: 1px solid {C_BORDER}; padding: 4px; }}
+            QMenu::item {{ padding: 6px 16px; border-radius: 4px; }}
+            QMenu::item:selected {{ background: #eef3ef; color: {C_TEXT}; }}
         """)
     
     def init_system_tray(self):
@@ -3415,9 +3595,7 @@ class WPSyncGUI(QMainWindow):
         # Check if already open
         if self.tab_manager.is_site_open(site_key):
             # Switch to existing tab
-            site_tab = self.tab_manager.get_tab(site_key)
-            index = self.tab_widget.indexOf(site_tab)
-            self.tab_widget.setCurrentIndex(index)
+            self.tab_manager.select(site_key)
             return
         
         # Check watch limit
@@ -3430,15 +3608,12 @@ class WPSyncGUI(QMainWindow):
         site_tab.sync_status_changed.connect(self.on_sync_status_changed)
         site_tab.close_requested.connect(self.on_tab_close_requested)
         
-        index = self.tab_manager.add_tab(site_tab)
-        self.tab_widget.setCurrentIndex(index)
-        
-        # Save session
-        self.tab_manager.save_session()
+        self.tab_manager.add_tab(site_tab)
+        self.tab_manager.select(site_key)
     
-    def close_tab(self, index):
-        """Close a tab at the given index"""
-        site_tab = self.tab_widget.widget(index)
+    def close_tab(self, site_key):
+        """Close an open site"""
+        site_tab = self.tab_manager.get_tab(site_key)
         if not site_tab:
             return
         
@@ -3457,7 +3632,8 @@ class WPSyncGUI(QMainWindow):
             site_tab.stop_watch()
         
         # Remove tab
-        self.tab_manager.remove_tab(site_tab.site_key)
+        self.tab_manager.remove_tab(site_key)
+        self.update_tray_status()
         
         # Save session
         self.tab_manager.save_session()
@@ -3514,6 +3690,10 @@ class WPSyncGUI(QMainWindow):
             site_file = self.sites_dir / f"{site_key}.env"
             if site_file.exists():
                 self.open_site_tab(site_key)
+        
+        active = self.settings_manager.get('active_site')
+        if active and self.tab_manager.is_site_open(active):
+            self.tab_manager.select(active)
     
     def create_new_site(self):
         """Create a new site - fetch from API or manual entry"""
@@ -3639,7 +3819,7 @@ class WPSyncGUI(QMainWindow):
             
             QMessageBox.information(
                 self, "Success",
-                f"Site '{site_key}' created successfully!\n\nOpening in new tab..."
+                f"Site '{site_key}' created successfully!"
             )
             
             # Open the new site in a tab
@@ -3815,13 +3995,6 @@ class WPSyncGUI(QMainWindow):
         
         # Otherwise, quit
         self.quit_application()
-    
-    def resizeEvent(self, event):
-        """Handle window resize - keep + button positioned"""
-        super().resizeEvent(event)
-        if hasattr(self, 'add_tab_button'):
-            # Position button in top-right corner
-            self.add_tab_button.move(self.width() - 44, 6)
 
 
 def main():
