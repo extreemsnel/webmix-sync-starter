@@ -1337,6 +1337,15 @@ class SiteTab(QWidget):
             self.favicon_thread.loaded.connect(self._on_favicon_loaded)
             self.favicon_thread.start()
 
+    def set_site_url(self, site_url):
+        """Store SITE_URL in this site's .env and load its favicon"""
+        site_file = self.sites_dir / f"{self.site_key}.env"
+        newline = '' if site_file.read_text().endswith('\n') else '\n'
+        with open(site_file, 'a') as f:
+            f.write(f'{newline}SITE_URL="{site_url}"\n')
+        self.config = self.load_config()
+        self.load_favicon()
+
     def _on_favicon_loaded(self, data):
         pixmap = QPixmap()
         if pixmap.loadFromData(data):
@@ -3803,6 +3812,8 @@ class WPSyncGUI(QMainWindow):
         
         self.tab_manager.add_tab(site_tab)
         self.tab_manager.select(site_key)
+        if not site_tab.config.get('SITE_URL'):
+            self.sync_site_urls()
     
     def close_tab(self, site_key):
         """Close an open site"""
@@ -3888,6 +3899,34 @@ class WPSyncGUI(QMainWindow):
         if active and self.tab_manager.is_site_open(active):
             self.tab_manager.select(active)
     
+    def sync_site_urls(self):
+        """Fill in missing Site URLs of open sites from the API (first domain of the matching cPanel)"""
+        if not self.settings_manager.is_authenticated():
+            return
+        # One fetch covers every open site (results are matched when they arrive)
+        if getattr(self, 'site_url_thread', None) and self.site_url_thread.isRunning():
+            return
+        self.site_url_thread = FetchSitesThread(
+            self.settings_manager.get('wp_url'),
+            self.settings_manager.get('wp_username'),
+            self.settings_manager.get('wp_app_password'))
+        self.site_url_thread.sites_result.connect(self._on_site_urls_fetched)
+        self.site_url_thread.start()
+
+    def _on_site_urls_fetched(self, success, data, message):
+        if not success:
+            return
+        for site_key, site_tab in list(self.tab_manager.site_tabs.items()):
+            if site_tab.config.get('SITE_URL'):
+                continue
+            # Titles aren't unique (e.g. two "dickerschutz" accounts): prefer the one on this site's server
+            matches = [d for d in data if d.get('title') == site_key and d.get('domains')]
+            on_host = [d for d in matches
+                       if any(srv.get('ip') == site_tab.config.get('SSH_HOST') for srv in d.get('server') or [])]
+            match = (on_host or matches or [None])[0]
+            if match:
+                site_tab.set_site_url(match['domains'][0])
+
     def create_new_site(self):
         """Create a new site - fetch from API or manual entry"""
         # Check authentication
