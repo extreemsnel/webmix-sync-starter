@@ -21,6 +21,9 @@ import os
 import time
 import shutil
 import signal
+import re
+import html
+from urllib.parse import urljoin
 from datetime import datetime, timedelta
 import requests
 from PyQt5.QtWidgets import (
@@ -383,6 +386,34 @@ class FetchSitesThread(QThread):
             self.sites_result.emit(False, None, f"Error: {str(e)}")
 
 
+class FaviconThread(QThread):
+    """Download a site's icon: the last <link rel="icon"> on the homepage (WordPress lists
+    the largest Site Icon last), falling back to /favicon.ico"""
+    loaded = pyqtSignal(bytes)
+    # Hosting firewalls answer non-browser user agents with 402
+    HEADERS = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+                             '(KHTML, like Gecko) Chrome/130.0 Safari/537.36'}
+
+    def __init__(self, site_url):
+        super().__init__()
+        self.site_url = site_url if '://' in site_url else f"https://{site_url}"
+
+    def run(self):
+        try:
+            home = requests.get(self.site_url, headers=self.HEADERS, timeout=10)
+            icon_url = urljoin(home.url, '/favicon.ico')
+            for tag in re.findall(r'<link\b[^>]*>', home.text, re.I):
+                rel = re.search(r'rel=["\']([^"\']*)', tag, re.I)
+                href = re.search(r'href=["\']([^"\']+)', tag, re.I)
+                if rel and href and 'icon' in rel.group(1).lower().split():
+                    icon_url = urljoin(home.url, html.unescape(href.group(1)))
+            response = requests.get(icon_url, headers=self.HEADERS, timeout=10)
+            if response.ok:
+                self.loaded.emit(response.content)
+        except requests.RequestException:
+            pass
+
+
 class RemoteFolderSelectorDialog(QDialog):
     """Dialog to fetch and select folders from remote server with navigation"""
     
@@ -649,6 +680,10 @@ class ConfigureSiteDialog(QDialog):
         self.remote_root_input.setPlaceholderText("e.g., /home/user/public_html/wp-content")
         config_layout.addRow("Remote Root:", self.remote_root_input)
         
+        self.site_url_input = QLineEdit()
+        self.site_url_input.setPlaceholderText("e.g., example.com (optional, for the favicon)")
+        config_layout.addRow("Site URL:", self.site_url_input)
+        
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
         
@@ -698,6 +733,10 @@ class ConfigureSiteDialog(QDialog):
         
         suggested_remote = f"/home/{site_title}/public_html/wp-content"
         self.remote_root_input.setText(suggested_remote)
+
+        domains = self.site_data.get('domains') or []
+        if domains:
+            self.site_url_input.setText(domains[0])
         
         default_sync_items = self.settings_manager.get('default_sync_items', 'themes\nplugins')
         self.sync_items_input.setPlainText(default_sync_items)
@@ -783,6 +822,7 @@ class ConfigureSiteDialog(QDialog):
             'ssh_user': self.ssh_user_input.text().strip(),
             'local_root': self.local_root_input.text().strip(),
             'remote_root': self.remote_root_input.text().strip(),
+            'site_url': self.site_url_input.text().strip(),
             'sync_items': sync_items,
             'rsync_delete': '1' if self.delete_check.isChecked() else '0',
             'debounce_seconds': str(self.debounce_input.value())
@@ -841,6 +881,10 @@ class NewSiteDialog(QDialog):
         self.remote_root_input = QLineEdit()
         self.remote_root_input.setPlaceholderText("e.g., /home/user/public_html/wp-content")
         form.addRow("Remote Root:", self.remote_root_input)
+        
+        self.site_url_input = QLineEdit()
+        self.site_url_input.setPlaceholderText("e.g., example.com (optional, for the favicon)")
+        form.addRow("Site URL:", self.site_url_input)
         
         layout.addLayout(form)
         
@@ -992,6 +1036,7 @@ class NewSiteDialog(QDialog):
             'ssh_user': self.ssh_user_input.text().strip(),
             'local_root': self.local_root_input.text().strip(),
             'remote_root': self.remote_root_input.text().strip(),
+            'site_url': self.site_url_input.text().strip(),
             'sync_items': sync_items,
             'rsync_delete': '1' if self.delete_check.isChecked() else '0',
             'debounce_seconds': str(self.debounce_input.value())
@@ -1126,6 +1171,13 @@ def icon_label(name, color=C_TEXT, size=18, box=None, object_name="iconBox"):
     return label
 
 
+def favicon_pixmap(pixmap, size):
+    """Scale a favicon for a crisp (2x) display at size x size"""
+    scaled = pixmap.scaled(size * 2, size * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    scaled.setDevicePixelRatio(2)
+    return scaled
+
+
 def text_label(text, object_name):
     label = QLabel(text)
     label.setObjectName(object_name)
@@ -1218,10 +1270,10 @@ class SiteListItem(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 12, 6)
         layout.setSpacing(12)
-        avatar = text_label(site_key[:1].upper(), "siteAvatar")
-        avatar.setFixedSize(30, 30)
-        avatar.setAlignment(Qt.AlignCenter)
-        layout.addWidget(avatar)
+        self.avatar = text_label(site_key[:1].upper(), "siteAvatar")
+        self.avatar.setFixedSize(30, 30)
+        self.avatar.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.avatar)
         text_col = QVBoxLayout()
         text_col.setSpacing(0)
         text_col.addWidget(text_label(site_key, "siteName"))
@@ -1236,6 +1288,9 @@ class SiteListItem(QWidget):
     def set_watching(self, watching):
         self.dot.setVisible(watching)
 
+    def set_favicon(self, pixmap):
+        self.avatar.setPixmap(favicon_pixmap(pixmap, 18))
+
 
 class SiteTab(QWidget):
     """Self-contained widget for managing one site"""
@@ -1245,6 +1300,7 @@ class SiteTab(QWidget):
     watch_stopped = pyqtSignal(str)  # site_key
     sync_status_changed = pyqtSignal(str, bool, str)  # site_key, is_syncing, operation
     close_requested = pyqtSignal(object)  # self
+    favicon_loaded = pyqtSignal(QPixmap)
     
     def __init__(self, site_key, project_root, sites_dir, settings_manager, parent=None):
         super().__init__(parent)
@@ -1270,6 +1326,22 @@ class SiteTab(QWidget):
         self.config = self.load_config()
         
         self.init_ui()
+        self.favicon_thread = None
+        self.load_favicon()
+
+    def load_favicon(self):
+        """Fetch the site's favicon in the background (needs SITE_URL)"""
+        site_url = self.config.get('SITE_URL', '').strip()
+        if site_url and not (self.favicon_thread and self.favicon_thread.isRunning()):
+            self.favicon_thread = FaviconThread(site_url)
+            self.favicon_thread.loaded.connect(self._on_favicon_loaded)
+            self.favicon_thread.start()
+
+    def _on_favicon_loaded(self, data):
+        pixmap = QPixmap()
+        if pixmap.loadFromData(data):
+            self.header_icon.setPixmap(favicon_pixmap(pixmap, 22))
+            self.favicon_loaded.emit(pixmap)
 
     def _set_remote_file_buttons_enabled(self, enabled):
         """Enable or disable remote file action buttons."""
@@ -1808,7 +1880,8 @@ fi
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(38, 0, 38, 0)
         header_layout.setSpacing(12)
-        header_layout.addWidget(icon_label('globe', C_TEXT, 20, 42, "iconBoxOutline"))
+        self.header_icon = icon_label('globe', C_TEXT, 20, 42, "iconBoxOutline")
+        header_layout.addWidget(self.header_icon)
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
         title_col.addStretch()
@@ -2373,6 +2446,7 @@ fi
         dialog.ssh_user_input.setText(self.config.get('SSH_USER', ''))
         dialog.local_root_input.setText(self.config.get('LOCAL_ROOT', ''))
         dialog.remote_root_input.setText(self.config.get('REMOTE_ROOT', ''))
+        dialog.site_url_input.setText(self.config.get('SITE_URL', ''))
         
         sync_items = self.config.get('SYNC_ITEMS', '')
         dialog.sync_items_input.setPlainText(sync_items)
@@ -2391,6 +2465,7 @@ fi
             
             # Reload config
             self.config = self.load_config()
+            self.load_favicon()
             self.log_output(f"\n✓ Site configuration updated: {self.site_key}\n", "success")
             QMessageBox.information(self, "Success", f"Site '{self.site_key}' updated successfully!")
     
@@ -2414,6 +2489,7 @@ fi
                 f.write(f'SSH_USER="{config["ssh_user"]}"\n')
                 f.write(f'LOCAL_ROOT="{config["local_root"]}"\n')
                 f.write(f'REMOTE_ROOT="{config["remote_root"]}"\n')
+                f.write(f'SITE_URL="{config["site_url"]}"\n')
                 sync_items_escaped = config["sync_items"].replace('\n', '\\n')
                 f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                 f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
@@ -2682,6 +2758,9 @@ fi
             self.watch_thread.stop()
             self.watch_thread.wait(2000)
         
+        if self.favicon_thread:
+            self.favicon_thread.wait()  # bounded by the request timeout
+        
         if self.current_thread and self.current_thread.isRunning():
             self.current_thread.stop()
             self.current_thread.wait(2000)
@@ -2714,7 +2793,9 @@ class TabManager:
         item.setData(Qt.UserRole, site_tab.site_key)
         item.setSizeHint(QSize(0, 58))
         self.site_list.addItem(item)
-        self.site_list.setItemWidget(item, SiteListItem(site_tab.site_key))
+        list_item = SiteListItem(site_tab.site_key)
+        site_tab.favicon_loaded.connect(list_item.set_favicon)
+        self.site_list.setItemWidget(item, list_item)
         return item
     
     def select(self, site_key):
@@ -3451,8 +3532,8 @@ class WPSyncGUI(QMainWindow):
         menu.exec_(self.site_list.mapToGlobal(pos))
     
     def apply_styles(self):
-        """Apply application styles"""
-        self.setStyleSheet(f"""
+        """Apply application styles (app-wide, so dialogs and message boxes match)"""
+        QApplication.instance().setStyleSheet(f"""
             QMainWindow, QStackedWidget#content {{ background-color: #f3f5f2; }}
             QWidget {{ font-size: 13px; color: {C_TEXT}; }}
             QLabel {{ background: transparent; }}
@@ -3534,6 +3615,30 @@ class WPSyncGUI(QMainWindow):
                 font-family: 'Menlo', 'Monaco', monospace; font-size: 11px; padding: 10px;
                 selection-background-color: #2e5440;
             }}
+            
+            /* Dialogs and message boxes */
+            QDialog {{ background-color: #f3f5f2; }}
+            QDialog QLineEdit, QDialog QPlainTextEdit, QDialog QTextEdit, QDialog QListWidget {{
+                background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 8px; padding: 5px 8px;
+                selection-background-color: #cfe6d8; selection-color: {C_TEXT};
+            }}
+            QDialog QLineEdit:focus, QDialog QPlainTextEdit:focus, QDialog QTextEdit:focus {{ border-color: #8cc9a4; }}
+            QDialog QLineEdit:read-only {{ background: #f0f3f1; color: {C_MUTED}; }}
+            QDialog QListWidget::item {{ padding: 4px; border-radius: 4px; }}
+            QDialog QListWidget::item:selected {{ background: #e5f1e9; color: {C_TEXT}; }}
+            QDialog QPushButton {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 8px; padding: 6px 14px; min-width: 60px; }}
+            QDialog QPushButton:hover {{ background: #f3f7f4; border-color: #c9d6cd; }}
+            QDialog QPushButton:pressed {{ background: #eaf1ec; }}
+            QDialog QPushButton:disabled {{ color: #b4bcb7; }}
+            QDialog QPushButton:default {{ background: {C_ACCENT}; border-color: {C_ACCENT}; color: #ffffff; font-weight: 500; }}
+            QDialog QPushButton:default:hover {{ background: #18573a; }}
+            QDialog QGroupBox {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 12px; margin-top: 20px; padding: 12px; }}
+            QDialog QGroupBox::title {{ subcontrol-origin: margin; left: 6px; color: {C_MUTED}; font-weight: 600; }}
+            QDialog QTabWidget::pane {{ background: #ffffff; border: 1px solid {C_BORDER}; border-radius: 12px; top: -1px; }}
+            QDialog QTabBar::tab {{ background: transparent; border: none; color: {C_MUTED}; padding: 6px 14px; }}
+            QDialog QTabBar::tab:selected {{ color: {C_TEXT}; border-bottom: 2px solid {C_ACCENT}; }}
+            QProgressBar {{ background: #e3e8e4; border: none; border-radius: 4px; text-align: center; max-height: 8px; }}
+            QProgressBar::chunk {{ background: {C_ACCENT}; border-radius: 4px; }}
             
             QMenu {{ background: #ffffff; border: 1px solid {C_BORDER}; padding: 4px; }}
             QMenu::item {{ padding: 6px 16px; border-radius: 4px; }}
@@ -3899,6 +4004,7 @@ class WPSyncGUI(QMainWindow):
                 f.write(f'SSH_USER="{config["ssh_user"]}"\n')
                 f.write(f'LOCAL_ROOT="{config["local_root"]}"\n')
                 f.write(f'REMOTE_ROOT="{config["remote_root"]}"\n')
+                f.write(f'SITE_URL="{config["site_url"]}"\n')
                 sync_items_escaped = config["sync_items"].replace('\n', '\\n')
                 f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                 f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
