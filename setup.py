@@ -26,7 +26,7 @@ OPTIONS = {
         'NSHighResolutionCapable': True,
         'NSRequiresAquaSystemAppearance': True,  # light UI only
     },
-    'packages': ['PyQt5', 'requests', 'packaging'],
+    'packages': ['PyQt5', 'requests', 'packaging', 'certifi'],  # certifi unzipped: zipped cacert.pem gets extracted to $TMPDIR, which macOS purges
     'includes': ['subprocess', 'pathlib', 'json', 'base64'],
 }
 
