@@ -10,6 +10,7 @@ GITHUB_REPO_OWNER = "extreemsnel"
 GITHUB_REPO_NAME = "webmix-sync-starter"
 
 MAX_CONCURRENT_WATCHES = 5  # Hard limit on simultaneous watch modes
+SYNC_MARKER_FILE = ".webmix-last-sync.txt"  # In REMOTE_ROOT: who pulled/pushed last
 
 import sys
 import subprocess
@@ -23,6 +24,8 @@ import shutil
 import signal
 import re
 import html
+import getpass
+import socket
 from urllib.parse import urljoin
 from datetime import datetime, timedelta
 import requests
@@ -2078,6 +2081,32 @@ fi
         layout.addWidget(action_widget)
         return header
 
+    def _current_user(self):
+        return self.settings_manager.get('wp_username') or getpass.getuser()
+
+    def _sync_marker_ssh(self, command):
+        """Run a command against the server's last-sync file; never raises, returns stdout"""
+        remote_root = self.config.get('REMOTE_ROOT', '').strip()
+        ssh_cmd = remote_root and self._build_ssh_command(
+            command.replace('{path}', self._shell_quote(self._remote_join(remote_root, SYNC_MARKER_FILE))))
+        try:
+            return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15).stdout if ssh_cmd else ''
+        except Exception:
+            return ''
+
+    def _last_sync_by_other(self):
+        """HTML notice if the last pull/push on the server was done by someone else, else None"""
+        info = dict(line.split('=', 1) for line in self._sync_marker_ssh("cat {path} 2>/dev/null").splitlines() if '=' in line)
+        if info.get('user') and info['user'] != self._current_user():
+            return (f"<b>{html.escape(info['user'])}</b> was the last to <b>{html.escape(info.get('action', 'sync'))}</b>"
+                    f" ({html.escape(info.get('time', '?'))}, {html.escape(info.get('host', '?'))}).")
+        return None
+
+    def _record_sync(self, action):
+        content = (f"user={self._current_user()}\naction={action.lower()}\n"
+                   f"time={datetime.now():%Y-%m-%d %H:%M}\nhost={socket.gethostname()}\n")
+        self._sync_marker_ssh(f"printf %s {self._shell_quote(content)} > {{path}}")
+
     def set_connection_status(self, ok, detail=None):
         """Update header pill: ok=None (untested), True (connected), False (failed)"""
         title, color = {None: ("Not tested", "#b4bcb7"), True: ("Connected", "#22c55e"), False: ("Unreachable", C_DANGER)}[ok]
@@ -2103,6 +2132,9 @@ fi
     
     def run_pull(self):
         """Execute pull command"""
+        notice = self._last_sync_by_other()
+        if notice:
+            QMessageBox.warning(self, "Someone else synced last", notice)
         script_path = self.bin_dir / "pull"
         args = [str(script_path), self.site_key]
         self.execute_command(args, "Pull")
@@ -2144,9 +2176,11 @@ fi
                 self.log_output("❌ Push aborted: Local directory is empty\n", "error")
                 return
         
+        notice = self._last_sync_by_other()
         reply = QMessageBox.question(
             self, "Confirm Push",
-            "Are you sure you want to push local changes to the remote server?",
+            (f"⚠️ {notice}<br><br>Make sure you have their latest changes before pushing.<br><br>" if notice else "")
+            + "Are you sure you want to push local changes to the remote server?",
             QMessageBox.Yes | QMessageBox.No
         )
         if reply != QMessageBox.Yes:
@@ -2301,6 +2335,7 @@ fi
         
         if return_code == 0:
             self.log_output(f"\n✓ {action_name} completed successfully\n", "success")
+            self._record_sync(action_name)
         else:
             self.log_output(f"\n✗ {action_name} failed with exit code {return_code}\n", "error")
         
