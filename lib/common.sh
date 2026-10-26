@@ -66,6 +66,11 @@ load_site_config() {
   : "${REMOTE_ROOT:?Missing REMOTE_ROOT in $SITE_FILE}"
   : "${SYNC_ITEMS:?Missing SYNC_ITEMS in $SITE_FILE}"
 
+  # One-off override without touching the site config, e.g. SYNC_ONLY="plugins/foo" bin/pull site
+  if [[ -n "${SYNC_ONLY:-}" ]]; then
+    SYNC_ITEMS="$SYNC_ONLY"
+  fi
+
   RSYNC_DELETE="${RSYNC_DELETE:-0}"
   DEBOUNCE_SECONDS="${DEBOUNCE_SECONDS:-1}"
   SSH_KEY_FILE="${SSH_KEY_FILE:-}"
