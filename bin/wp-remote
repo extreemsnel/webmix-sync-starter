@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Run a WP-CLI command on a site's server: bin/wp-remote <site-key> <wp args...>
+# Stdin is passed through, e.g. bin/wp-remote site option update foo --format=json < foo.json
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../lib/common.sh"
+
+SITE_KEY="${1:-}"
+[[ -n "$SITE_KEY" && $# -ge 2 ]] || die "Usage: $0 <site-key> <wp args...>"
+shift
+
+require_command ssh
+load_site_config "$SITE_KEY"
+
+wp_root="$REMOTE_ROOT"
+[[ "$(basename "$wp_root")" == "wp-content" ]] && wp_root="$(dirname "$wp_root")"
+
+remote="cd $(printf '%q' "$wp_root") && WP_CLI_PHP_ARGS='-d display_errors=stderr' wp$(printf ' %q' "$@")"
+eval "$(build_ssh_cmd) -o ConnectTimeout=10 $(printf '%q' "$SSH_USER@$SSH_HOST") $(printf '%q' "$remote")"
